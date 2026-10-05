@@ -16,13 +16,19 @@ export function ManagedAiConnectionRow({
   const metadata = connection.config?.ai as
     | {
         provider: "anthropic" | "openai" | "openrouter" | "xai";
-        method: "subscription" | "api_key";
+        method: "subscription" | "api_key" | "third_party_api";
+        baseUrl?: string;
+        model?: string;
       }
     | undefined;
   if (!metadata) return null;
   return (
     <p className="text-xs text-muted-foreground">
-      {aiMethodLabel(metadata.provider, metadata.method)} ·{" "}
+      {aiMethodLabel(metadata.provider, metadata.method)}
+      {metadata.method === "third_party_api" && metadata.model
+        ? ` · ${metadata.model}`
+        : ""}{" "}
+      ·{" "}
       {connection.credentialPolicy === "per_user"
         ? "Personal"
         : "Company shared"}

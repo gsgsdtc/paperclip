@@ -18,6 +18,7 @@ import {
   localAiConnectionSchema,
   localAiLoginStartSchema,
   isAiConnectionCompatible,
+  normalizeThirdPartyBaseUrl,
   type AiConnectionLoginIntent,
   type AiProvider,
   type AiConnectionBinding,
@@ -166,6 +167,89 @@ export async function validateAiApiKey(
     );
 }
 
+function thirdPartyModelsUrl(baseUrl: string): string {
+  return `${normalizeThirdPartyBaseUrl(baseUrl)}/models`;
+}
+
+function parseThirdPartyModelIds(payload: unknown): string[] {
+  const data = (payload as { data?: unknown } | null | undefined)?.data;
+  if (!Array.isArray(data)) return [];
+  const ids = data.flatMap((entry) =>
+    entry && typeof entry === "object" && typeof (entry as { id?: unknown }).id === "string"
+      ? [(entry as { id: string }).id]
+      : [],
+  );
+  return [...new Set(ids)].sort();
+}
+
+/**
+ * Best-effort probe of an operator-supplied endpoint at creation time. Unlike
+ * the fixed provider endpoints, an unreachable endpoint is allowed here: an
+ * internal gateway may only be reachable from the run environment. A definitive
+ * auth rejection still fails creation.
+ */
+export async function validateThirdPartyAiEndpoint(
+  baseUrl: string,
+  key: string,
+  request: typeof fetch = fetch,
+) {
+  let response: Response;
+  try {
+    response = await request(thirdPartyModelsUrl(baseUrl), {
+      redirect: "error",
+      signal: AbortSignal.timeout(15000),
+      headers: { Authorization: `Bearer ${key}` },
+    });
+  } catch {
+    return;
+  }
+  await response.body?.cancel();
+  if (response.status === 401 || response.status === 403)
+    throw unprocessable("The endpoint rejected this API key.");
+}
+
+/** Explicit operator action from the setup form, so failures surface verbatim. */
+export async function fetchThirdPartyModels(
+  baseUrl: string,
+  key: string,
+  request: typeof fetch = fetch,
+): Promise<string[]> {
+  let response: Response;
+  try {
+    response = await request(thirdPartyModelsUrl(baseUrl), {
+      redirect: "error",
+      signal: AbortSignal.timeout(15000),
+      headers: { Authorization: `Bearer ${key}` },
+    });
+  } catch {
+    throw unprocessable("Could not reach the endpoint. Check the base URL.");
+  }
+  if (response.status === 401 || response.status === 403) {
+    await response.body?.cancel();
+    throw unprocessable("The endpoint rejected this API key.");
+  }
+  if (!response.ok) {
+    await response.body?.cancel();
+    throw unprocessable(
+      "The endpoint did not return a model list. Enter the model name manually.",
+    );
+  }
+  let payload: unknown;
+  try {
+    payload = await response.json();
+  } catch {
+    throw unprocessable(
+      "The endpoint did not return a JSON model list. Enter the model name manually.",
+    );
+  }
+  const models = parseThirdPartyModelIds(payload);
+  if (!models.length)
+    throw unprocessable(
+      "The endpoint returned no models. Enter the model name manually.",
+    );
+  return models;
+}
+
 export function aiConnectionRoutes(db: Db, options: Parameters<typeof supportsLocalAiLogin>[0] = {}) {
   function assertLocalLoginAvailable() {
     if (!supportsLocalAiLogin(options)) throw unprocessable("Server-host subscription sign-in is unavailable on this hosted instance. Choose a supported sign-in environment or use an API key.");
@@ -265,6 +349,25 @@ export function aiConnectionRoutes(db: Db, options: Parameters<typeof supportsLo
     },
   );
   router.post(
+    "/companies/:companyId/ai-connections/third-party/models",
+    validate(
+      z
+        .object({
+          baseUrl: z.string().trim().min(1).max(2048),
+          apiKey: z.string().trim().min(1).max(32768),
+        })
+        .strict(),
+    ),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertBoard(req);
+      assertCompanyAccess(req, companyId);
+      const input = req.body as { baseUrl: string; apiKey: string };
+      res.setHeader("Cache-Control", "no-store");
+      res.json({ models: await fetchThirdPartyModels(input.baseUrl, input.apiKey) });
+    },
+  );
+  router.post(
     "/companies/:companyId/ai-connections",
     validate(createAiConnectionSchema),
     async (req, res) => {
@@ -276,12 +379,16 @@ export function aiConnectionRoutes(db: Db, options: Parameters<typeof supportsLo
         companyId,
         input,
       );
-      if (input.method !== "api_key")
-        throw unprocessable(
-          "Use the existing provider sign-in flow to connect a subscription",
-        );
+      if (input.method === "third_party_api") {
+        await validateThirdPartyAiEndpoint(input.baseUrl!, input.apiKey!);
+      } else {
+        if (input.method !== "api_key")
+          throw unprocessable(
+            "Use the existing provider sign-in flow to connect a subscription",
+          );
+        await validateAiApiKey(input.provider, input.apiKey!);
+      }
       const attemptStartedAt = new Date();
-      await validateAiApiKey(input.provider, input.apiKey!);
       const result = await service.save(
         companyId,
         userId,

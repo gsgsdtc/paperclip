@@ -1,12 +1,14 @@
 import { createHash } from "node:crypto";
 import { HttpError, unprocessable } from "../errors.js";
-import { mkdtemp, mkdir, writeFile, readFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, readFile, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { and, eq } from "drizzle-orm";
 import { type Db, companySecrets, connectionGrants } from "@paperclipai/db";
 import {
   AI_CONNECTION_CAPABILITIES,
+  aiConnectionMetadataSchema,
+  thirdPartyEndpointOf,
   type AiConnectionBinding,
 } from "@paperclipai/shared";
 import { aiConnectionService } from "./ai-connections.js";
@@ -39,6 +41,9 @@ export const AI_AUTH_ENV_KEYS = [
   "OPENCODE_CONFIG",
   "OPENCODE_CONFIG_DIR",
   "PAPERCLIP_OPENCODE_PROVIDERS",
+  // Managed AI connections own Codex provider routing; a leftover agent-level
+  // value must never override the selected endpoint.
+  "PAPERCLIP_CODEX_PROVIDERS",
   "ANTHROPIC_BASE_URL",
   "OPENAI_BASE_URL",
   "XAI_BASE_URL",
@@ -65,6 +70,22 @@ export function stripAiAuthBindings(env: unknown): Record<string, unknown> {
       delete result[key];
   return result;
 }
+/**
+ * Whether this directory is the outermost boundary of the project.
+ *
+ * A `.git` entry is what makes a directory the repository root rather than one
+ * more directory on the way up to `/`. The scan stops here: a config above the
+ * repository is not the project's, whatever it happens to be named.
+ */
+async function isProjectRoot(directory: string): Promise<boolean> {
+  try {
+    await stat(path.join(directory, ".git"));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function assertManagedAiProjectAuth(
   config: Record<string, unknown>,
   provider: AiConnectionBinding["provider"],
@@ -107,17 +128,21 @@ export async function assertManagedAiProjectAuth(
         `
 directory=$1; pattern=$2; shift 2
 while :; do
-  for relative in "$@"; do
-    file="$directory/$relative"
-    if test -f "$file"; then
-      grep -Eq "$pattern" "$file"
-      result=$?
-      if test "$result" -eq 0; then exit 42; fi
-      if test "$result" -ne 1; then exit 43; fi
-    fi
-  done
+  if test -z "$HOME" || test "$directory" != "$HOME"; then
+    for relative in "$@"; do
+      file="$directory/$relative"
+      if test -f "$file"; then
+        grep -Eq "$pattern" "$file"
+        result=$?
+        if test "$result" -eq 0; then exit 42; fi
+        if test "$result" -ne 1; then exit 43; fi
+      fi
+    done
+  fi
   parent=$(dirname "$directory")
   if test "$parent" = "$directory"; then break; fi
+  if test "$directory" = "$HOME"; then break; fi
+  if test -e "$directory/.git"; then break; fi
   directory=$parent
 done`,
         "ai-auth-check",
@@ -142,28 +167,71 @@ done`,
   }
   let directory =
     typeof config.cwd === "string" ? path.resolve(config.cwd) : process.cwd();
+  /**
+   * Where the walk stops, and why it is two things rather than one.
+   *
+   * It ended at `/`, which is where this went wrong: every ancestor of a
+   * developer's working copy was inspected, `$HOME/.codex/config.toml` among
+   * them, so the CLI's own home read as a project override and every run failed
+   * with "project authentication settings conflict". The file it was reading
+   * was never the project's.
+   *
+   * A project ends at its repository root, and it never contains the home
+   * directory. Stopping at both keeps the guard for what it is for — a
+   * `.codex/config.toml` committed beside the code — and drops the false
+   * positive it cannot have been meant to catch.
+   */
+  const home = path.resolve(os.homedir());
   for (;;) {
-    for (const relative of files) {
-      try {
-        const content = await readFile(path.join(directory, relative), "utf8");
-        if (
-          /apiKeyHelper|ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN|CLAUDE_CODE_OAUTH_TOKEN|OPENAI_API_KEY|model_provider\s*=|env_key\s*=|experimental_bearer_token|cli_auth_credentials_store/.test(
-            content,
-          )
-        ) {
-          throw unprocessable(
-            "Project authentication settings conflict with the selected AI connection",
-            { code: "ai_connection_incompatible" },
-          );
+    if (directory !== home) {
+      for (const relative of files) {
+        try {
+          const content = await readFile(path.join(directory, relative), "utf8");
+          if (
+            /apiKeyHelper|ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN|CLAUDE_CODE_OAUTH_TOKEN|OPENAI_API_KEY|model_provider\s*=|env_key\s*=|experimental_bearer_token|cli_auth_credentials_store/.test(
+              content,
+            )
+          ) {
+            throw unprocessable(
+              "Project authentication settings conflict with the selected AI connection",
+              { code: "ai_connection_incompatible" },
+            );
+          }
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
         }
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       }
     }
     const parent = path.dirname(directory);
-    if (parent === directory) break;
+    if (parent === directory || directory === home) break;
+    if (await isProjectRoot(directory)) break;
     directory = parent;
   }
+}
+
+/**
+ * Third-party OpenAI-compatible routing for the managed Codex home. Written
+ * directly into the per-run config.toml so both Codex engines (CLI and the
+ * default ACP) pick up the endpoint, the model, and the wire protocol.
+ */
+function thirdPartyCodexConfigToml(endpoint: {
+  baseUrl: string;
+  model: string;
+  wireApi: "responses" | "chat";
+}): string {
+  const quote = (value: string) => `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+  return [
+    'cli_auth_credentials_store = "file"',
+    'model_provider = "paperclip"',
+    `model = ${quote(endpoint.model)}`,
+    "",
+    "[model_providers.paperclip]",
+    'name = "Paperclip third-party endpoint"',
+    `base_url = ${quote(endpoint.baseUrl)}`,
+    'env_key = "OPENAI_API_KEY"',
+    `wire_api = ${quote(endpoint.wireApi)}`,
+    "",
+  ].join("\n");
 }
 
 function managedAiHomeEnvironment(home: string): Record<string, string> {
@@ -270,17 +338,38 @@ export async function prepareManagedAiRuntime(
         selection.attribution.method
       ]!;
     const authFile = path.join(providerHome, "auth.json");
+    // Third-party endpoints are openai/codex_local only. Fail closed when the
+    // stored descriptor is missing rather than silently calling OpenAI.
+    const thirdParty =
+      input.binding.provider === "openai" &&
+      selection.attribution.method === "third_party_api"
+        ? thirdPartyEndpointOf(
+            aiConnectionMetadataSchema.safeParse(selection.connection.config.ai)
+              .data,
+          )
+        : null;
+    if (
+      input.binding.provider === "openai" &&
+      selection.attribution.method === "third_party_api" &&
+      !thirdParty
+    )
+      throw unprocessable("Reconnect this third-party endpoint before running it", {
+        code: "ai_connection_credential_missing",
+      });
     if (input.binding.provider === "openai")
       await writeFile(
         path.join(providerHome, "config.toml"),
-        'cli_auth_credentials_store = "file"\n',
+        thirdParty
+          ? thirdPartyCodexConfigToml(thirdParty)
+          : 'cli_auth_credentials_store = "file"\n',
         { mode: 0o600 },
       );
     if (subscriptionFile) await writeFile(authFile, value, { mode: 0o600 });
     else env[capability.envKey] = value;
     if (
       input.binding.provider === "openai" &&
-      selection.attribution.method === "api_key"
+      (selection.attribution.method === "api_key" ||
+        selection.attribution.method === "third_party_api")
     ) {
       env.CODEX_API_KEY = value;
       await writeFile(authFile, JSON.stringify({ OPENAI_API_KEY: value }), {
@@ -302,6 +391,9 @@ export async function prepareManagedAiRuntime(
       config: {
         ...input.config,
         env,
+        // The connection owns the model for third-party endpoints, so the run
+        // always asks that endpoint for the model it actually serves.
+        ...(thirdParty ? { model: thirdParty.model } : {}),
         managedAiConnection: { ...selection.attribution, identity },
       },
       attribution: selection.attribution,

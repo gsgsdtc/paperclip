@@ -33,7 +33,9 @@ export const AI_PROVIDERS = [
   "xai",
 ] as const;
 export const aiProviderSchema = z.enum(AI_PROVIDERS);
-export const aiAuthMethodSchema = z.enum(["subscription", "api_key"]);
+export const aiAuthMethodSchema = z.enum(["subscription", "api_key", "third_party_api"]);
+/** OpenAI-compatible wire protocol spoken to a third-party endpoint. */
+export const aiThirdPartyWireApiSchema = z.enum(["responses", "chat"]);
 export type AiProvider = z.infer<typeof aiProviderSchema>;
 export type AiAuthMethod = z.infer<typeof aiAuthMethodSchema>;
 const requirement = { provider: aiProviderSchema, method: aiAuthMethodSchema };
@@ -64,7 +66,19 @@ export const aiConnectionBindingSchema = z.discriminatedUnion("mode", [
     .strict(),
 ]);
 export type AiConnectionBinding = z.infer<typeof aiConnectionBindingSchema>;
-export const aiConnectionMetadataSchema = z.object(requirement).strict();
+/**
+ * Descriptor stored in `config.ai`. `baseUrl`/`model`/`wireApi` are only
+ * meaningful for the `third_party_api` method; the catalog schema also uses
+ * this shape, so the fields stay optional here and creation validates them.
+ */
+export const aiConnectionMetadataSchema = z
+  .object({
+    ...requirement,
+    baseUrl: z.string().trim().min(1).max(2048).optional(),
+    model: z.string().trim().min(1).max(256).optional(),
+    wireApi: aiThirdPartyWireApiSchema.optional(),
+  })
+  .strict();
 export type AiConnectionMetadata = z.infer<typeof aiConnectionMetadataSchema>;
 
 /** Existing integrations only. This table describes compatibility, never routing. */
@@ -92,6 +106,10 @@ export const AI_CONNECTION_CAPABILITIES: Record<
     methods: {
       subscription: { adapters: ["codex_local"], envKey: "CODEX_HOME" },
       api_key: { adapters: ["codex_local"], envKey: "OPENAI_API_KEY" },
+      third_party_api: {
+        adapters: ["codex_local"],
+        envKey: "OPENAI_API_KEY",
+      },
     },
   },
   openrouter: {
@@ -170,6 +188,10 @@ export interface AiManagedConnectionSummary {
   isDefault: boolean;
   status: "connected" | "needs_attention" | "expired" | "revoked";
   unavailableReason?: string;
+  /** Present only for `third_party_api` accounts; never a secret value. */
+  baseUrl?: string;
+  model?: string;
+  wireApi?: AiThirdPartyWireApi;
 }
 export const createAiConnectionSchema = z
   .object({
@@ -178,6 +200,10 @@ export const createAiConnectionSchema = z
     ownership: z.enum(["personal", "shared"]),
     apiKey: z.string().trim().min(1).max(32768).optional(),
     loginSessionId: z.string().max(128).optional(),
+    /** Third-party (OpenAI-compatible) endpoint fields. */
+    baseUrl: z.string().trim().min(1).max(2048).optional(),
+    model: z.string().trim().min(1).max(256).optional(),
+    wireApi: aiThirdPartyWireApiSchema.optional(),
     connectionId: z.string().uuid().optional(),
     agentIds: z.array(z.string().uuid()).max(1000).default([]),
     allAgents: z.boolean().default(false),
@@ -186,6 +212,27 @@ export const createAiConnectionSchema = z
   .superRefine((v, ctx) => {
     if (!AI_CONNECTION_CAPABILITIES[v.provider].methods[v.method])
       ctx.addIssue({ code: "custom", message: "Unsupported sign-in method" });
+    if (v.method === "third_party_api") {
+      if (!v.baseUrl || !isThirdPartyBaseUrl(v.baseUrl))
+        ctx.addIssue({
+          code: "custom",
+          message: "Provide an http(s) endpoint base URL",
+          path: ["baseUrl"],
+        });
+      if (!v.model)
+        ctx.addIssue({
+          code: "custom",
+          message: "Provide the model name served by this endpoint",
+          path: ["model"],
+        });
+      if (!v.apiKey || v.loginSessionId)
+        ctx.addIssue({
+          code: "custom",
+          message: "Provide exactly the credential for the selected sign-in method",
+          path: ["apiKey"],
+        });
+      return;
+    }
     if (
       v.method === "api_key"
         ? !v.apiKey || Boolean(v.loginSessionId)
@@ -199,6 +246,50 @@ export const createAiConnectionSchema = z
     }
   });
 export type CreateAiConnection = z.infer<typeof createAiConnectionSchema>;
+export type AiThirdPartyWireApi = z.infer<typeof aiThirdPartyWireApiSchema>;
+/**
+ * The wire protocol assumed when an endpoint does not name one.
+ *
+ * `chat`, not `responses`. The Responses API is OpenAI's own; every other
+ * OpenAI-*compatible* endpoint — DeepSeek, Moonshot, Qwen, the Ark and
+ * OpenRouter gateways — implements `/chat/completions` and nothing else, so
+ * assuming `responses` makes the first attempt fail for almost everyone who
+ * points Codex at a third party. OpenAI's own endpoint speaks both, so this
+ * default is the one that is wrong for the fewest people; the picker is still
+ * there for the ones it is wrong for.
+ */
+export const DEFAULT_AI_THIRD_PARTY_WIRE_API: AiThirdPartyWireApi = "chat";
+
+/** Boards may point Codex at internal gateways, so both http and https are allowed. */
+export function isThirdPartyBaseUrl(value: string): boolean {
+  try {
+    const parsed = new URL(value.trim());
+    return (
+      (parsed.protocol === "http:" || parsed.protocol === "https:") &&
+      Boolean(parsed.hostname)
+    );
+  } catch {
+    return false;
+  }
+}
+
+/** Stored/compared form of a third-party endpoint: no trailing slashes. */
+export function normalizeThirdPartyBaseUrl(value: string): string {
+  return value.trim().replace(/\/+$/, "");
+}
+
+/** Non-secret endpoint descriptor for a third-party connection, or null. */
+export function thirdPartyEndpointOf(
+  metadata: AiConnectionMetadata | null | undefined,
+): { baseUrl: string; model: string; wireApi: AiThirdPartyWireApi } | null {
+  if (!metadata || metadata.method !== "third_party_api") return null;
+  if (!metadata.baseUrl || !metadata.model) return null;
+  return {
+    baseUrl: metadata.baseUrl,
+    model: metadata.model,
+    wireApi: metadata.wireApi ?? DEFAULT_AI_THIRD_PARTY_WIRE_API,
+  };
+}
 
 export const aiConnectionLoginIntentSchema = z
   .object({

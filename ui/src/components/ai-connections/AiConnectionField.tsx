@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   aiConnectionBindingSchema,
@@ -44,6 +44,7 @@ export function AiConnectionField({
   environmentId,
   legacy = false,
   readOnly = false,
+  onBoundConnectionModel,
 }: {
   companyId: string;
   agentId?: string;
@@ -55,6 +56,8 @@ export function AiConnectionField({
   environmentId?: string;
   legacy?: boolean;
   readOnly?: boolean;
+  /** Third-party connections own their model; hosts can lock the model field. */
+  onBoundConnectionModel?: (model: string | null) => void;
 }) {
   const provider = aiProviderForAdapter(adapterType);
   const returnFocus = useRef<HTMLElement | null>(null);
@@ -75,6 +78,25 @@ export function AiConnectionField({
   const method: AiAuthMethod = (value?.mode !== "responsible_user" ? value?.method : undefined)
     ?? accounts.data?.connections.find((account) => account.provider === provider && account.isDefault)?.method
     ?? (provider === "openrouter" ? "api_key" : "subscription");
+  const boundThirdPartyModel = useMemo(() => {
+    if (!provider || !value) return null;
+    const connections = accounts.data?.connections ?? [];
+    const currentUserId = accounts.data?.currentUserId ?? "";
+    const selected =
+      value.mode === "responsible_user"
+        ? connections.find(
+            (connection) =>
+              connection.provider === provider &&
+              connection.ownership === "personal" &&
+              connection.ownerUserId === currentUserId &&
+              connection.isDefault,
+          )
+        : connections.find((connection) => connection.id === value.connectionId);
+    return selected?.method === "third_party_api" ? selected.model ?? null : null;
+  }, [accounts.data, provider, value]);
+  useEffect(() => {
+    onBoundConnectionModel?.(boundThirdPartyModel);
+  }, [boundThirdPartyModel, onBoundConnectionModel]);
   if (!provider) return null;
   if (legacy && !value && !adopting)
     return (
@@ -160,18 +182,18 @@ export function AiConnectionField({
             companyId={companyId}
             provider={provider}
             initialMethod={method}
-            name={`My ${provider === "anthropic" ? "Claude" : provider === "openai" ? "OpenAI" : provider === "xai" ? "Grok" : "OpenRouter"} ${method === "subscription" ? "subscription" : "API"}`}
+            name={`My ${provider === "anthropic" ? "Claude" : provider === "openai" ? "OpenAI" : provider === "xai" ? "Grok" : "OpenRouter"} ${method === "subscription" ? "subscription" : method === "third_party_api" ? "third-party API" : "API"}`}
             ownership="personal"
             agentIds={agentId ? [agentId] : []}
             allAgents={false}
             environmentId={environmentId}
             onCancel={() => setConnecting(false)}
-            onComplete={() => {
+            onComplete={(result) => {
               void client.invalidateQueries({
                 queryKey: ["ai-connections", companyId],
               });
               setConnecting(false);
-              changeBinding({ provider, method, mode: "responsible_user" });
+              changeBinding({ provider, method: result.method, mode: "delegated", connectionId: result.connectionId, grantId: result.grantId });
             }}
           />
         </DialogContent>

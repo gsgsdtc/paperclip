@@ -486,7 +486,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const backgroundSaveOverlayRef = useRef<AgentConfigOverlay | null>(null);
   const backgroundSaveInFlightRef = useRef(false);
 
-  // Clear overlay when agent data refreshes (after save)
+  // A refresh can carry run/status changes or a stale pre-save response.
+  // Keep local edits until the refreshed configuration actually contains them.
   useEffect(() => {
     if (!isCreate) {
       if (
@@ -496,9 +497,24 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       ) {
         const persisted = backgroundSaveOverlayRef.current;
         backgroundSaveOverlayRef.current = null;
-        setOverlay((prev) =>
-          persisted ? subtractPersistedOverlay(prev, persisted) : { ...emptyOverlay },
-        );
+        const refreshedAgent = props.agent;
+        const changedAgent = refreshedAgent.id !== agentRef.current.id;
+        setOverlay((prev) => {
+          if (changedAgent) return { ...emptyOverlay };
+          if (persisted) return subtractPersistedOverlay(prev, persisted);
+          const runtimeConfig = asObject(refreshedAgent.runtimeConfig);
+          const representedFields = (draft: Record<string, unknown>, saved: Record<string, unknown>) =>
+            Object.fromEntries(Object.keys(draft).map((field) => [field, saved[field]]));
+          const saved = refreshedAgent as unknown as Record<string, unknown>;
+          return subtractPersistedOverlay(prev, {
+            identity: representedFields(prev.identity, saved),
+            adapterType: refreshedAgent.adapterType,
+            adapterConfig: representedFields(prev.adapterConfig, asObject(refreshedAgent.adapterConfig)),
+            heartbeat: representedFields(prev.heartbeat, asObject(runtimeConfig.heartbeat)),
+            debug: representedFields(prev.debug, asObject(runtimeConfig.debug)),
+            runtime: representedFields(prev.runtime, saved),
+          });
+        });
       }
       agentRef.current = props.agent;
     }
@@ -967,6 +983,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   );
   // Popover states
   const [modelOpen, setModelOpen] = useState(false);
+  // A bound third-party AI connection owns the model, so the field is read-only.
+  const [thirdPartyConnectionModel, setThirdPartyConnectionModel] = useState<string | null>(null);
   const [thinkingEffortOpen, setThinkingEffortOpen] = useState(false);
 
   function buildAdapterConfigForTest(adapterConfigPatch?: Record<string, unknown>): Record<string, unknown> {
@@ -1660,7 +1678,16 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           {!isCreate && selectedCompanyId && <AiConnectionField companyId={selectedCompanyId} agentId={props.agent.id} agentName={props.agent.name} adapterType={adapterType === "paperclip_runner" ? eff("adapterConfig", "provider", config.provider) === "codex" ? "codex_local" : eff("adapterConfig", "provider", config.provider) === "opencode" ? "opencode_local" : eff("adapterConfig", "provider", config.provider) === "acpx" && eff("adapterConfig", "acpxAgent", config.acpxAgent) === "claude" ? "claude_local" : adapterType : adapterType}
             value={aiConnectionBindingSchema.safeParse((overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? runtimeConfig.aiConnection).data}
             model={String(eff("adapterConfig", "model", config.model) ?? "")} environmentId={currentDefaultEnvironmentId || undefined} legacy
-            onChange={binding => mark("runtime", "runtimeConfig", { ...runtimeConfig, aiConnection: binding })} />}
+            onBoundConnectionModel={setThirdPartyConnectionModel}
+            onChange={binding => {
+              mark("runtime", "runtimeConfig", { ...eff("runtime", "runtimeConfig", runtimeConfig), aiConnection: binding });
+              // Drop the endpoint-owned model when returning to OpenAI so the
+              // subscription does not receive a third-party model name.
+              if (binding.provider === "openai" && binding.method !== "third_party_api" && thirdPartyConnectionModel === currentModelId) {
+                mark("adapterConfig", "model", DEFAULT_CODEX_LOCAL_MODEL);
+                mark("adapterConfig", "modelReasoningEffort", undefined);
+              }
+            }} />}
 
           {showInlineAdapterTestEnvironmentFeedback && !props.compactTestFeedback && (testActionError || testEnvironment.error) && (
             <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
@@ -1716,6 +1743,17 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
           {renderAdapterFields("adapter")}
           {isLocal && (<>
+              {thirdPartyConnectionModel ? (
+                <Field
+                  label="Model"
+                  hint="This third-party AI connection provides the model used at run time."
+                >
+                  <div className="flex items-center gap-2 rounded-md border border-border bg-muted/40 px-2.5 py-1.5 text-sm text-muted-foreground">
+                    <span className="font-mono">{thirdPartyConnectionModel}</span>
+                    <span className="text-xs">Provided by the AI connection</span>
+                  </div>
+                </Field>
+              ) : (
               <ModelDropdown
                 models={models}
                 value={currentModelId}
@@ -1761,6 +1799,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 detectModelLabel="Detect model"
                 emptyDetectHint="No model detected. Select or enter one manually."
               />
+              )}
               {(refreshModelsError || fetchedModelsError) && (
                 <p className="text-xs text-destructive">
                   {refreshModelsError

@@ -395,7 +395,15 @@ export function OnboardingCardField({
       autoFocus={autoFocus}
       aria-label={label}
       type={masked ? "password" : "text"}
-      autoComplete="off"
+      /*
+        Safari and Chrome ignore `autocomplete="off"` on a password field and
+        offer saved logins over it instead — a popover anchored under the field,
+        which on the endpoint card lands on top of the Model row and swallows
+        the presses meant for it. `new-password` is the one value they honour:
+        it says "not a credential being entered to sign in", so no list is
+        offered and nothing covers what is below the field.
+      */
+      autoComplete={masked ? "new-password" : "off"}
       spellCheck={false}
       placeholder={placeholder}
       value={value}

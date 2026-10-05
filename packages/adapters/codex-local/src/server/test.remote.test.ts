@@ -139,6 +139,32 @@ describe("codex remote environment diagnostics", () => {
     }
   });
 
+  it("keeps a managed subscription when its empty API key disables the server key", async () => {
+    vi.stubEnv("OPENAI_API_KEY", "fixture-ambient-server-key");
+    const selectedHome = await makeScratchDir("paperclip-selected-subscription-");
+    await fs.writeFile(path.join(selectedHome, "auth.json"), JSON.stringify({
+      tokens: { access_token: "fixture-subscription", account_id: "fixture-account" },
+    }));
+
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "codex_local",
+      config: {
+        engine: "cli",
+        managedAiConnection: { provider: "openai", method: "subscription" },
+        env: { CODEX_HOME: selectedHome, OPENAI_API_KEY: "" },
+      },
+    });
+
+    expect(result.status).toBe("pass");
+    expect(result.checks.some(check => check.code === "codex_openai_api_key_present")).toBe(false);
+    expect(runAdapterExecutionTargetProcess).toHaveBeenCalledWith(
+      expect.any(String), null, "codex", expect.any(Array),
+      expect.objectContaining({ env: expect.objectContaining({ CODEX_HOME: selectedHome, OPENAI_API_KEY: "" }) }),
+    );
+    expect(await fs.readFile(path.join(selectedHome, "auth.json"), "utf8")).toContain("fixture-subscription");
+  });
+
   it("stages managed CODEX_HOME in an isolated runtime dir and keeps the probe cwd on the original remote workspace", async () => {
     const remoteTarget: AdapterExecutionTarget = {
       kind: "remote",

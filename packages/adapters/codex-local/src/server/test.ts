@@ -341,7 +341,11 @@ export async function testEnvironment(
   }
 
   const configOpenAiKey = env.OPENAI_API_KEY;
-  const hostOpenAiKey = targetIsRemote ? undefined : process.env.OPENAI_API_KEY;
+  // An explicit empty key disables ambient authentication for managed
+  // subscriptions. The probe must use the selected account's CODEX_HOME.
+  const hostOpenAiKey = targetIsRemote || Object.prototype.hasOwnProperty.call(env, "OPENAI_API_KEY")
+    ? undefined
+    : process.env.OPENAI_API_KEY;
   if (isNonEmpty(configOpenAiKey) || isNonEmpty(hostOpenAiKey)) {
     const source = isNonEmpty(configOpenAiKey) ? "adapter config env" : "server environment";
     checks.push({

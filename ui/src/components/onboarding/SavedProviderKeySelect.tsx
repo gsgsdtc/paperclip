@@ -54,7 +54,10 @@ export function useSavedProviderKeys(
   });
   return {
     storedLogin,
-    options: [...managedAccounts.filter(account => account.aiConnection?.method === "api_key"), ...savedProviderKeys(
+    // Third-party (OpenAI-compatible) endpoints are keyed like an API key, so
+    // they belong in the same reuse list. Their binding keeps `third_party_api`
+    // as the method; the model still comes from the connection.
+    options: [...managedAccounts.filter(account => account.aiConnection?.method === "api_key" || account.aiConnection?.method === "third_party_api"), ...savedProviderKeys(
       companyId ?? "",
       envKey,
       personal.data ?? [],

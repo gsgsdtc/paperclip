@@ -69,6 +69,55 @@
         "location": "env",
         "name": "OPENAI_API_KEY"
       }
+    },
+    {
+      "key": "ai-third_party_api",
+      "label": "Third-party API (OpenAI-compatible)",
+      "purpose": "ai",
+      "transport": "runtime_auth",
+      "auth": "api_key",
+      "ai": {
+        "provider": "openai",
+        "method": "third_party_api"
+      },
+      "grantKinds": [
+        "user",
+        "organization"
+      ],
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Authenticate a Codex agent against an OpenAI-compatible endpoint you host or subscribe to.",
+      "guidanceMd": "Provide the endpoint base URL, the API key, the model name that endpoint serves, and the wire protocol (responses or chat).",
+      "riskTier": "S3",
+      "credentialFields": [
+        {
+          "key": "baseUrl",
+          "label": "Base URL",
+          "type": "text",
+          "required": true,
+          "placeholder": "https://gateway.example.com/v1"
+        },
+        {
+          "key": "apiKey",
+          "label": "API key",
+          "type": "password",
+          "required": true,
+          "placeholder": "Enter API key",
+          "secret": true
+        },
+        {
+          "key": "model",
+          "label": "Model",
+          "type": "text",
+          "required": true,
+          "placeholder": "e.g. deepseek-chat"
+        }
+      ],
+      "keyPlacement": {
+        "location": "env",
+        "name": "OPENAI_API_KEY"
+      }
     }
   ]
 }

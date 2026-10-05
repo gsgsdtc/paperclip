@@ -2085,6 +2085,58 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       await act(async () => root.unmount());
     });
 
+    it("takes an OpenAI-compatible endpoint and enables Connect once all three answers are given", async () => {
+      // The endpoint card is three fields and a protocol, and Connect is gated
+      // on all three strings. Each field has to reach its own piece of state:
+      // a field wired to the wrong setter, or to none, renders and focuses and
+      // looks entirely normal, and only shows up as a button that never lights.
+      mockAdapterRegistry.list = [{ type: "claude_local" }, { type: "codex_local" }];
+      const { root } = await openStep4({ adapterType: "codex_local" });
+
+      // The mode is chosen before the source — the link row is what is on
+      // screen until the row collapses — so the link is pressed while the
+      // sequence is still idle.
+      const link = [...document.body.querySelectorAll("button")].find((b) =>
+        b.textContent?.includes("Use an OpenAI-compatible API instead"),
+      );
+      expect(link, "the OpenAI source should offer an OpenAI-compatible endpoint").toBeTruthy();
+      await act(async () => {
+        link!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await flushReact();
+
+      await pickSource(/OpenAI/);
+
+      const field = (label: string) =>
+        document.body.querySelector(`input[aria-label="${label}"]`) as HTMLInputElement | null;
+      const base = field("Base URL");
+      const key = field("API key");
+      const model = field("Model");
+      expect(base, "the card asks for a base URL").toBeTruthy();
+      expect(key, "the card asks for an API key").toBeTruthy();
+      expect(model, "the card asks for a model").toBeTruthy();
+
+      const cta = () =>
+        [...document.body.querySelectorAll("button")].find((b) =>
+          isArcPrimary(b.textContent?.trim() ?? ""),
+        ) as HTMLButtonElement;
+      expect(cta().disabled, "Connect has nothing to do until the form is filled").toBe(true);
+
+      await act(async () => {
+        setControlledValue(base!, "https://ark.cn-beijing.volces.com/api/plan/v3");
+        setControlledValue(key!, "sk-test");
+        setControlledValue(model!, "deepseek-chat");
+      });
+      for (let i = 0; i < 3; i++) await flushReact();
+
+      expect(base!.value).toBe("https://ark.cn-beijing.volces.com/api/plan/v3");
+      expect(key!.value).toBe("sk-test");
+      expect(model!.value).toBe("deepseek-chat");
+      expect(cta().disabled, "Connect goes live on the last field, not before it").toBe(false);
+
+      await act(async () => root.unmount());
+    });
+
     it("will not advance on a saved adapter the step no longer offers", async () => {
       // A draft can name an adapter this registry does not carry — a cloud
       // sandbox without claude_local, an adapter since disabled. The row hides

@@ -119,6 +119,31 @@ describe("the connect step's cards", () => {
     expect(key!.getAttribute("aria-label")).toBe("API key");
   });
 
+  it("keeps the browser's saved-login list off the card", () => {
+    // `autocomplete="off"` is a hint a browser is free to drop for a password
+    // field, and Chrome and Safari both drop it: they offer the site's saved
+    // logins instead, in a popover anchored under the field. On the endpoint
+    // card that popover lands on the Model row below it and takes the presses
+    // meant for it, so the row looks focused and stays empty and the button
+    // below it never lights. `new-password` is the value they honour.
+    render(
+      <>
+        <OnboardingCardField value="" onChange={() => {}} onSubmit={() => {}} />
+        <OnboardingCardField
+          label="API key"
+          masked
+          value=""
+          onChange={() => {}}
+          onSubmit={() => {}}
+        />
+      </>,
+    );
+
+    const [code, key] = [...container.querySelectorAll("input")];
+    expect(code!.getAttribute("autocomplete")).toBe("off");
+    expect(key!.getAttribute("autocomplete")).toBe("new-password");
+  });
+
   it("holds one height across the card's waiting and ready states", () => {
     // The card opens on a spinner and then fills. Both states share a floor, so
     // the footer below is pushed down once for one event rather than twice —

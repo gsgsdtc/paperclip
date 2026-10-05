@@ -8,20 +8,15 @@ import {
 } from "./index.js";
 
 describe("codex local adapter metadata", () => {
-  it("advertises current Codex-capable OpenAI models without changing the default", () => {
+  it("advertises current Codex-capable OpenAI models with GPT-6.1 as the default", () => {
     const modelIds = models.map((model) => model.id);
 
-    // Default to the concrete gpt-5.6-sol slug — Codex ships no metadata for the bare gpt-5.6
-    // alias, so it must not be advertised or used as the default (it triggers a fallback warning).
-    expect(DEFAULT_CODEX_LOCAL_MODEL).toBe("gpt-5.6-sol");
-    expect(modelIds.slice(0, 6)).toEqual([
-      "gpt-5.6-sol",
-      "gpt-6-astra",
-      "gpt-6-sol",
-      "gpt-6-luna",
-      "gpt-5.6-terra",
-      "gpt-5.6-luna",
+    expect(DEFAULT_CODEX_LOCAL_MODEL).toBe("gpt-6.1-sol");
+    expect(modelIds.slice(0, 7)).toEqual([
+      "gpt-6.1-sol", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna",
+      "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna",
     ]);
+    expect(new Set(modelIds).size).toBe(modelIds.length);
     expect(modelIds).not.toContain("gpt-5.6");
     expect(isCodexLocalFastModeSupported(DEFAULT_CODEX_LOCAL_MODEL)).toBe(true);
     expect(isCodexLocalFastModeSupported("gpt-6-astra")).toBe(true);
@@ -30,7 +25,7 @@ describe("codex local adapter metadata", () => {
     expect(modelIds).not.toContain("gpt-5.3-codex-spark");
   });
 
-  it.each(["gpt-6-astra", "gpt-6-sol", " gpt-6-sol ", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6"])("uses the reasoning efforts advertised for %s", (model) => {
+  it.each(["gpt-6.1-sol", "gpt-6-astra", "gpt-6-sol", " gpt-6-sol ", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6"])("uses the reasoning efforts advertised for %s", (model) => {
     expect(codexLocalReasoningEffortsForModel(model)).toEqual([
       "low",
       "medium",
