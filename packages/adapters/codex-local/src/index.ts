@@ -106,6 +106,9 @@ export function isCodexLocalFastModeSupported(model: string | null | undefined):
   );
 }
 
+// Ordered the way the ChatGPT app orders Codex models (#14878): newest model version first,
+// then by decreasing capability inside each version, older models at the end. The server
+// returns this list as written and the model dropdown keeps its order.
 export const models = [
   // Advertise the current default first while retaining older explicit selections.
   { id: DEFAULT_CODEX_LOCAL_MODEL, label: DEFAULT_CODEX_LOCAL_MODEL },
@@ -119,10 +122,10 @@ export const models = [
   { id: "gpt-5.4", label: "gpt-5.4" },
   { id: "gpt-5.4-mini", label: "gpt-5.4-mini" },
   { id: "gpt-5", label: "gpt-5" },
-  { id: "o3", label: "o3" },
-  { id: "o4-mini", label: "o4-mini" },
   { id: "gpt-5-mini", label: "gpt-5-mini" },
   { id: "gpt-5-nano", label: "gpt-5-nano" },
+  { id: "o3", label: "o3" },
+  { id: "o4-mini", label: "o4-mini" },
   { id: "o3-mini", label: "o3-mini" },
   { id: "codex-mini-latest", label: "Codex Mini" },
 ];

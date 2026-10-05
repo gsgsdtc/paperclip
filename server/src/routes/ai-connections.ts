@@ -22,6 +22,7 @@ import {
   type AiConnectionLoginIntent,
   type AiProvider,
   type AiConnectionBinding,
+  type AiConnectionList,
 } from "@paperclipai/shared";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { forbidden, notFound, unprocessable } from "../errors.js";
@@ -35,6 +36,14 @@ export function responsibleUserForAiRequest(req: Request): string | null {
   return req.actor.type === "agent"
     ? req.actor.onBehalfOfUserId ?? null
     : getActorInfo(req).actorId;
+}
+
+async function canManageAiConnections(db: Db, req: Request, companyId: string): Promise<boolean> {
+  const membership = req.actor.memberships?.find((m) => m.companyId === companyId && m.status === "active");
+  if (membership?.membershipRole === "viewer") return false;
+  return req.actor.source === "local_implicit" || Boolean(req.actor.isInstanceAdmin)
+    || membership?.membershipRole === "owner" || membership?.membershipRole === "admin"
+    || await accessService(db).hasPermission(companyId, "user", getActorInfo(req).actorId, "tools:manage_connections");
 }
 
 export async function assertAiConnectionCreateAccess(
@@ -77,17 +86,7 @@ export async function assertAiConnectionCreateAccess(
   const membership = req.actor.memberships?.find(
     (m) => m.companyId === companyId && m.status === "active",
   );
-  const manager =
-    req.actor.source === "local_implicit" ||
-    req.actor.isInstanceAdmin ||
-    membership?.membershipRole === "owner" ||
-    membership?.membershipRole === "admin" ||
-    (await accessService(db).hasPermission(
-      companyId,
-      "user",
-      userId,
-      "tools:manage_connections",
-    ));
+  const manager = await canManageAiConnections(db, req, companyId);
   if (
     !input.connectionId &&
     !manager &&
@@ -156,7 +155,7 @@ export async function validateAiApiKey(
           : { Authorization: `Bearer ${key}` },
     });
   } catch {
-    throw unprocessable("Could not verify the account. Try again.");
+    throw unprocessable("Could not verify the account. Try again.", { code: "ai_connection_verification_failed" });
   }
   await response.body?.cancel();
   if (!response.ok)
@@ -164,6 +163,7 @@ export async function validateAiApiKey(
       response.status === 401 || response.status === 403
         ? "The provider rejected this API key."
         : "The provider could not verify this account. Try again.",
+      { code: response.status === 401 || response.status === 403 ? "ai_connection_api_key_rejected" : "ai_connection_verification_failed" },
     );
 }
 
@@ -300,13 +300,27 @@ export function aiConnectionRoutes(db: Db, options: Parameters<typeof supportsLo
       throw unprocessable("Invalid agent ID");
     res.json({
       currentUserId,
+      canManageConnections: await canManageAiConnections(db, req, companyId),
       connections: await service.list(
         companyId,
         currentUserId,
         agentId as string | undefined,
       ),
-    });
+    } satisfies AiConnectionList);
   });
+  router.get(
+    "/companies/:companyId/ai-connections/:connectionId/usage",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertBoard(req);
+      assertCompanyAccess(req, companyId);
+      const connectionId = z.string().uuid().safeParse(req.params.connectionId);
+      const grantId = z.string().uuid().optional().safeParse(req.query.grantId);
+      if (!connectionId.success || !grantId.success) throw unprocessable("Invalid connection or grant ID");
+      res.setHeader("Cache-Control", "no-store");
+      res.json(await service.probeUsage(companyId, getActorInfo(req).actorId, connectionId.data, grantId.data));
+    },
+  );
   router.get(
     "/companies/:companyId/ai-connections/:connectionId/active-runs",
     async (req, res) => {

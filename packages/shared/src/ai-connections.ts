@@ -194,6 +194,12 @@ export interface AiManagedConnectionSummary {
   baseUrl?: string;
   model?: string;
   wireApi?: AiThirdPartyWireApi;
+  usageProbeSupported?: boolean;
+}
+export interface AiConnectionList {
+  currentUserId: string;
+  canManageConnections: boolean;
+  connections: AiManagedConnectionSummary[];
 }
 export const createAiConnectionSchema = z
   .object({

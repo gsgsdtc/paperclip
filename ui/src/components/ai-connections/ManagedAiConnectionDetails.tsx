@@ -5,6 +5,7 @@ import { aiConnectionsApi } from "@/api/ai-connections";
 import { toolsApi } from "@/api/tools";
 import { useNavigate } from "@/lib/router";
 import { AiConnectionAccountControls } from "./AiConnectionAccountControls";
+import { AiConnectionUsagePanel } from "./AiConnectionUsagePanel";
 import type { ToolConnection } from "@paperclipai/shared";
 import { aiMethodLabel } from "./model";
 
@@ -134,7 +135,7 @@ export function ManagedAiConnectionDetails({
           )
         }
       />
-
+      <AiConnectionUsagePanel key={`${account.id}:${account.grantId}:${account.status}`} account={account} />
     </div>
   );
 }
