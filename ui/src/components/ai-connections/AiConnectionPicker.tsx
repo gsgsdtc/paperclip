@@ -58,7 +58,7 @@ export function AiConnectionPicker({
     agentId,
   ) : undefined;
   const select = (
-    mode: "shared",
+    mode: "shared" | "delegated",
     connection: AiConnectionSummary,
   ) =>
     onChange({
@@ -68,6 +68,13 @@ export function AiConnectionPicker({
       connectionId: connection.id,
       grantId: connection.grantId,
     });
+  // List every owned account explicitly, including the default, so an agent
+  // can pin a subscription independently of future default changes.
+  const owned = compatible.filter(
+    (connection) =>
+      connection.ownership === "personal" &&
+      connection.ownerUserId === currentUserId,
+  );
   return (
     <section className="flex flex-col gap-4" aria-label="AI connection">
       <div className="flex items-center gap-3">
@@ -111,6 +118,11 @@ export function AiConnectionPicker({
                 <span className="block">For you: {personalDefault?.name ?? "Not connected"}</span>
                 <span className="block">Other users’ tasks use their own {AI_PROVIDERS[requirement.provider].name} connection.</span>
               </> },
+              ...owned.map((connection) => ({
+                id: connection.id, name: connection.name,
+                disabled: Boolean(aiConnectionProblem(connection)),
+                description: <>Your account · {aiMethodLabel(connection.provider, connection.method)}{connection.method === "third_party_api" && connection.model ? ` · ${connection.model}` : ""}{connection.accountLabel ? ` · ${connection.accountLabel}` : ""}{aiConnectionProblem(connection) ? ` · ${aiConnectionProblem(connection)}` : ""}</>,
+              })),
               ...compatible.filter((connection) => connection.ownership === "shared").map((connection) => ({
                 id: connection.id, name: connection.name,
                 disabled: Boolean(aiConnectionProblem(connection)),
@@ -119,7 +131,10 @@ export function AiConnectionPicker({
             ]}
             onSelect={(id) => {
               if (id === "responsible_user") onChange({provider: requirement.provider, method: personalDefault?.method ?? requirement.method ?? (requirement.provider === "openrouter" ? "api_key" : "subscription"), mode: "responsible_user"});
-              else { const connection = compatible.find((item) => item.id === id)!; select("shared", connection); }
+              else {
+                const connection = compatible.find((item) => item.id === id)!;
+                select(connection.ownership === "personal" ? "delegated" : "shared", connection);
+              }
             }}
           />
           {problem && (

@@ -21,7 +21,9 @@ import {
   AI_CONNECTION_CAPABILITIES,
   aiConnectionMetadataSchema,
   aiSubscriptionNeedsIsolatedLogin,
+  DEFAULT_AI_THIRD_PARTY_WIRE_API,
   isAiConnectionCompatible,
+  normalizeThirdPartyBaseUrl,
   type AiConnectionBinding,
   type AiConnectionAttribution,
   type AiConnectionMetadata,
@@ -524,6 +526,19 @@ export function aiConnectionService(db: Db) {
         )
           throw unprocessable("The connection changed. Start reconnect again.");
       }
+      // Third-party endpoints carry their non-secret routing (base URL, model,
+      // wire protocol) in config.ai; the credential still lives in the vault.
+      const aiMetadata: AiConnectionMetadata = {
+        provider: input.provider,
+        method: input.method,
+        ...(input.method === "third_party_api"
+          ? {
+              baseUrl: normalizeThirdPartyBaseUrl(input.baseUrl!),
+              model: input.model!,
+              wireApi: input.wireApi ?? DEFAULT_AI_THIRD_PARTY_WIRE_API,
+            }
+          : {}),
+      };
       let secretId = reconnect?.grant.credentialSecretRefs.find(
         (r) => r.configPath === "ai.credential",
       )?.secretId;
@@ -625,7 +640,12 @@ export function aiConnectionService(db: Db) {
             status: "active",
             healthStatus: "ok",
             healthMessage: null,
-            config: { ...reconnect.connection.config, aiIsolatedSubscription: input.method === "subscription" && input.provider !== "anthropic" },
+            config: {
+              ...reconnect.connection.config,
+              ai: aiMetadata,
+              aiIsolatedSubscription:
+                input.method === "subscription" && input.provider !== "anthropic",
+            },
             updatedAt: new Date(),
           })
           .where(eq(toolConnections.id, id));
@@ -640,7 +660,8 @@ export function aiConnectionService(db: Db) {
             uid: `ai-${id}`,
             connectionPurpose: "ai",
             transport: "runtime_auth",
-            authKind: input.method === "api_key" ? "api_key" : "oauth",
+            authKind:
+              input.method === "subscription" ? "oauth" : "api_key",
             credentialPolicy:
               input.ownership === "personal" ? "per_user" : "shared",
             status: "active",
@@ -648,8 +669,9 @@ export function aiConnectionService(db: Db) {
             healthStatus: "ok",
             config: {
               sourceTemplateKey: input.provider,
-              ai: { provider: input.provider, method: input.method },
-              aiIsolatedSubscription: input.method === "subscription" && input.provider !== "anthropic",
+              ai: aiMetadata,
+              aiIsolatedSubscription:
+                input.method === "subscription" && input.provider !== "anthropic",
             },
             createdByUserId: userId,
           });

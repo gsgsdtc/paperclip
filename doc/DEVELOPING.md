@@ -1101,8 +1101,13 @@ unsupported value fails with remediation instead of being silently coerced.
 OpenCode defaults to `allow`, with explicit `ask` and `deny` options; ACPX
 defaults to `approve-all`, with explicit `approve-paperclip`, `approve-reads`,
 and `deny-all` options. Codex conversion keeps a non-empty model and
-otherwise stores the shared `gpt-5.6-sol` default. The native execution boundary
+otherwise stores the shared `gpt-6.1-sol` default. The native execution boundary
 applies the same default to older runner rows whose model is missing or blank.
+Explicit saved model selections stay unchanged. The bundled Codex CLI and ACP
+runtime use 0.160.0; remote stable CLI compatibility is >=0.149.0 <0.161.0.
+Codex 0.160.0 advertises `gpt-6.1-sol`, Fast mode, and reasoning efforts from
+`low` through `ultra` in its app-server model catalog. These are Codex controls;
+the public Responses API model page lists reasoning efforts through `max`.
 
 For an Agent Chat test drive, enable **Agent Chat** in Experimental settings and
 configure two agents with Paperclip Runner: native Codex and ACPX Claude. Connect

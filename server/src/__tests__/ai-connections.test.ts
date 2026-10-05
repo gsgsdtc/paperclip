@@ -4,7 +4,7 @@ import { issueRecoveryActionService } from "../services/issue-recovery-actions.j
 import * as localCredentials from "../services/local-ai-credentials.js";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm, access, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, access, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { and, eq, sql } from "drizzle-orm";
@@ -19,7 +19,7 @@ import { aiConnectionBindingSchema, connectionPurposeTransportSchema, isAiConnec
 import express from "express";
 import request from "supertest";
 import { aiConnectionRoutes, canInstallSharedAiConnectionForNewAgent, responsibleUserForAiRequest } from "../routes/ai-connections.js";
-import { validateAiApiKey } from "../routes/ai-connections.js";
+import { validateAiApiKey, validateThirdPartyAiEndpoint, fetchThirdPartyModels } from "../routes/ai-connections.js";
 
 let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
 let db: ReturnType<typeof createDb>;
@@ -147,6 +147,29 @@ describe("managed AI connections", () => {
       await expect(assertManagedAiProjectAuth({}, "openai", target)).resolves.toBeUndefined();
       await expect(assertManagedAiProjectAuth({ args: ["--api-key=override"] }, "xai", target)).rejects.toThrow("overrides");
     } finally { execute.mockRestore(); }
+  });
+  it("stops the project-auth scan at the repository root", async () => {
+    // The walk ran to `/`, so on a developer's machine it always reached
+    // `$HOME/.codex/config.toml` — the Codex CLI's own home, which sets
+    // `model_provider` and `env_key` — and every run failed with a conflict the
+    // project never had. A config above the repository root is not the
+    // project's, so the scan stops there; one beside the code still refuses.
+    const sandbox = await mkdtemp(path.join(os.tmpdir(), "paperclip-auth-scan-"));
+    const projectRoot = path.join(sandbox, "project");
+    const cwd = path.join(projectRoot, "src", "app");
+    try {
+      await mkdir(path.join(projectRoot, ".git"), { recursive: true });
+      await mkdir(cwd, { recursive: true });
+      await mkdir(path.join(sandbox, ".codex"), { recursive: true });
+      await writeFile(path.join(sandbox, ".codex", "config.toml"), 'model_provider = "elsewhere"\n');
+      await expect(assertManagedAiProjectAuth({ cwd }, "openai")).resolves.toBeUndefined();
+
+      await mkdir(path.join(projectRoot, ".codex"), { recursive: true });
+      await writeFile(path.join(projectRoot, ".codex", "config.toml"), 'model_provider = "elsewhere"\n');
+      await expect(assertManagedAiProjectAuth({ cwd }, "openai")).rejects.toThrow("conflict");
+    } finally {
+      await rm(sandbox, { recursive: true, force: true });
+    }
   });
   it("keeps personal defaults separate and does not replace the first default", async () => {
     const first = await create("alice", "Alice first");
@@ -813,4 +836,152 @@ describe("AI connection recovery delivery", () => {
       }
     }, 30000,
   );
+});
+
+describe("third-party AI endpoints", () => {
+  it("stores endpoint routing and injects it into the managed Codex home", async () => {
+    const userId = "third-party-user";
+    await db.insert(companyMemberships).values({ companyId, principalId: userId, principalType: "user", status: "active", membershipRole: "member" });
+    const cwd = await mkdtemp(path.join(os.tmpdir(), "paperclip-third-party-cwd-"));
+    const saved = await service.save(companyId, userId, {
+      provider: "openai",
+      method: "third_party_api",
+      ownership: "personal",
+      name: "Relay",
+      apiKey: "sk-relay",
+      baseUrl: "https://gateway.example.com/v1/",
+      model: "deepseek-chat",
+      wireApi: "chat",
+      agentIds: [],
+      allAgents: true,
+    }, "sk-relay");
+    const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, saved.connectionId));
+    // A third-party endpoint authenticates with a key, never with OAuth.
+    expect(connection.authKind).toBe("api_key");
+    expect(connection.credentialPolicy).toBe("per_user");
+    expect(connection.config.ai).toEqual({
+      provider: "openai",
+      method: "third_party_api",
+      baseUrl: "https://gateway.example.com/v1",
+      model: "deepseek-chat",
+      wireApi: "chat",
+    });
+
+    const run = await prepareManagedAiRuntime(db, {
+      ...input,
+      adapterType: "codex_local",
+      binding: { provider: "openai", method: "third_party_api", mode: "responsible_user" },
+      responsibleUserId: userId,
+      // An isolated cwd keeps the project-auth scan away from the host's own
+      // ~/.codex/config.toml, which is unrelated to this test.
+      config: { cwd, model: "stale-model", env: { PAPERCLIP_CODEX_PROVIDERS: '{"providers":{}}' } },
+    });
+    try {
+      const env = run.config.env as Record<string, string>;
+      expect(env.OPENAI_API_KEY).toBe("sk-relay");
+      expect(env.CODEX_API_KEY).toBe("sk-relay");
+      // The connection owns routing, so a leftover agent-level value is cleared.
+      expect(env.PAPERCLIP_CODEX_PROVIDERS).toBe("");
+      expect(JSON.parse(await readFile(path.join(env.CODEX_HOME, "auth.json"), "utf8"))).toEqual({ OPENAI_API_KEY: "sk-relay" });
+      const configToml = await readFile(path.join(env.CODEX_HOME, "config.toml"), "utf8");
+      expect(configToml).toContain('cli_auth_credentials_store = "file"');
+      expect(configToml).toContain('model_provider = "paperclip"');
+      expect(configToml).toContain('model = "deepseek-chat"');
+      expect(configToml).toContain('base_url = "https://gateway.example.com/v1"');
+      expect(configToml).toContain('env_key = "OPENAI_API_KEY"');
+      expect(configToml).toContain('wire_api = "chat"');
+      // The connection's model wins over the agent's stored model.
+      expect(run.config.model).toBe("deepseek-chat");
+    } finally {
+      await run.cleanup();
+      await rm(cwd, { recursive: true, force: true });
+    }
+  }, 30000);
+
+  it("fails closed when a stored third-party descriptor is incomplete", async () => {
+    const userId = "third-party-incomplete-user";
+    const cwd = await mkdtemp(path.join(os.tmpdir(), "paperclip-third-party-cwd-"));
+    await db.insert(companyMemberships).values({ companyId, principalId: userId, principalType: "user", status: "active", membershipRole: "member" });
+    const saved = await service.save(companyId, userId, {
+      provider: "openai", method: "third_party_api", ownership: "personal", name: "Broken relay",
+      apiKey: "sk-relay", baseUrl: "https://gateway.example.com/v1", model: "deepseek-chat",
+      agentIds: [], allAgents: true,
+    }, "sk-relay");
+    await db.update(toolConnections)
+      .set({ config: { sourceTemplateKey: "openai", ai: { provider: "openai", method: "third_party_api" } } })
+      .where(eq(toolConnections.id, saved.connectionId));
+    try {
+      await expect(prepareManagedAiRuntime(db, {
+        ...input,
+        adapterType: "codex_local",
+        binding: { provider: "openai", method: "third_party_api", mode: "responsible_user" },
+        responsibleUserId: userId,
+        config: { cwd },
+      })).rejects.toThrow("Reconnect this third-party endpoint");
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  }, 30000);
+
+  it("adopts a third-party endpoint into an agent without a CLI hello probe", async () => {
+    const { agentRoutes } = await import("../routes/agents.js");
+    const { instanceSettingsService } = await import("../services/instance-settings.js");
+    const targetModule = await import("../services/environment-execution-target.js");
+    const runtimeModule = await import("../services/environment-runtime.js");
+    const { requireServerAdapter } = await import("../adapters/index.js");
+    const userId = "third-party-adopt-user";
+    await db.insert(companyMemberships).values({ companyId, principalId: userId, principalType: "user", status: "active", membershipRole: "member" });
+    const cwd = await mkdtemp(path.join(os.tmpdir(), "paperclip-third-party-adopt-"));
+    const settings = instanceSettingsService(db);
+    const previous = await settings.get();
+    const [environment] = await db.insert(environments).values({ name: "Third-party adoption sandbox", driver: "sandbox", config: { provider: "daytona" } }).returning();
+    await settings.update({ defaultEnvironmentId: environment.id });
+    const adoptId = randomUUID();
+    await db.insert(agents).values({ id: adoptId, companyId, name: "Third-party adoption", adapterType: "codex_local", adapterConfig: { model: "gpt-5.6-sol" } });
+    const saved = await service.save(companyId, userId, {
+      provider: "openai", method: "third_party_api", ownership: "personal", name: "Adoption relay",
+      apiKey: "sk-adopt", baseUrl: "https://gateway.example.com/v1", model: "deepseek-chat", wireApi: "chat",
+      agentIds: [adoptId], allAgents: false,
+    }, "sk-adopt");
+    await service.setDefault(companyId, userId, saved.grantId);
+    const target = { kind: "remote", transport: "sandbox", remoteCwd: "/workspace", providerKey: "daytona", runner: { execute: vi.fn(async () => ({ exitCode: 0, stdout: "", stderr: "", timedOut: false })) } } as const;
+    const resolveTarget = vi.spyOn(targetModule, "resolveEnvironmentExecutionTarget").mockResolvedValue(target as never);
+    const runtime = vi.spyOn(runtimeModule, "environmentRuntimeService").mockReturnValue({ acquireRunLease: vi.fn(async () => ({ lease: { id: randomUUID(), provider: "daytona", providerLeaseId: "test-sandbox", metadata: {} }, leaseContext: {} })), realizeWorkspace: vi.fn(async () => ({ cwd: "/workspace" })), getDriver: () => ({ releaseRunLease: vi.fn(async () => undefined) }) } as never);
+    // A clean install has no provider CLI, so the engine reports no hello-probe
+    // check at all - exactly the api_key situation. Adoption must not demand one.
+    const probe = vi.spyOn(requireServerAdapter("codex_local"), "testEnvironment").mockResolvedValue({ adapterType: "codex_local", status: "pass", testedAt: new Date().toISOString(), checks: [] });
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => { req.actor = { type: "board", source: "local_implicit", userId, companyIds: [companyId] }; next(); });
+    app.use("/api", agentRoutes(db));
+    app.use((error: { status?: number; message: string }, _req: express.Request, res: express.Response, _next: express.NextFunction) => { res.status(error.status ?? 500).json({ error: error.message }); });
+    try {
+      const response = await request(app).post(`/api/companies/${companyId}/adapters/codex_local/test-environment`).send({
+        aiConnection: { provider: "openai", method: "third_party_api", mode: "responsible_user" },
+        adapterConfig: { model: "gpt-5.6-sol", cwd },
+        environmentId: environment.id,
+      });
+      expect(response.status, JSON.stringify(response.body)).toBe(200);
+      expect(response.body.checks).toEqual(expect.arrayContaining([expect.objectContaining({ code: "ai_connection_third_party_key_verified" })]));
+    } finally {
+      probe.mockRestore(); runtime.mockRestore(); resolveTarget.mockRestore();
+      await settings.update({ defaultEnvironmentId: previous.defaultEnvironmentId });
+      await rm(cwd, { recursive: true, force: true });
+    }
+  }, 30000);
+
+  it("accepts an unreachable endpoint but rejects a credential rejection", async () => {
+    await expect(validateThirdPartyAiEndpoint("https://gateway.example.com/v1", "k", async () => new Response(null, { status: 200 }))).resolves.toBeUndefined();
+    await expect(validateThirdPartyAiEndpoint("https://gateway.example.com/v1", "k", async () => { throw new Error("offline"); })).resolves.toBeUndefined();
+    await expect(validateThirdPartyAiEndpoint("https://gateway.example.com/v1", "k", async () => new Response(null, { status: 401 }))).rejects.toThrow("rejected");
+  });
+
+  it("discovers and de-duplicates model ids", async () => {
+    const models = await fetchThirdPartyModels("https://gateway.example.com/v1/", "k", async () =>
+      new Response(JSON.stringify({ data: [{ id: "b" }, { id: "a" }, { id: "a" }, { object: "model" }] }), { status: 200 }),
+    );
+    expect(models).toEqual(["a", "b"]);
+    await expect(fetchThirdPartyModels("https://gateway.example.com/v1", "k", async () => new Response(null, { status: 401 }))).rejects.toThrow("rejected");
+    await expect(fetchThirdPartyModels("https://gateway.example.com/v1", "k", async () => new Response(null, { status: 500 }))).rejects.toThrow("model list");
+  });
 });

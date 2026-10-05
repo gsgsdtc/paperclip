@@ -3331,13 +3331,23 @@ export function agentRoutes(
     // requirement stays for subscriptions: a stored login is a file layout
     // only a provider CLI reads, so proving the runtime lane can consume it
     // takes a real hello turn.
-    if (resolvedMethod === "api_key") {
-      const envKey = AI_CONNECTION_CAPABILITIES[binding.provider].methods.api_key?.envKey;
+    //
+    // A third-party OpenAI-compatible endpoint rides the same env-var lane, so
+    // it is env-key verified here too. Its base URL and key were already
+    // checked when the connection was saved, and the runtime hands Codex a
+    // generated provider config, so there is no stored-login file for a hello
+    // probe to read. Treating it like a subscription forced a `codex` CLI probe
+    // against a gateway the test host may not reach, which blocked adopting a
+    // third-party connection into a new agent.
+    if (resolvedMethod === "api_key" || resolvedMethod === "third_party_api") {
+      const envKey = AI_CONNECTION_CAPABILITIES[binding.provider].methods[resolvedMethod]?.envKey;
       const key = envKey ? parseObject(context.config.env)[envKey] : undefined;
       try {
         if (typeof key !== "string" || !key) throw unprocessable("The selected account's API key was not available to verify.");
-        await validateAiApiKey(binding.provider, key);
-        result.checks.push({ code: "ai_connection_api_key_reverified", level: "info", message: "The provider verified this API key for adoption." });
+        if (resolvedMethod === "api_key") await validateAiApiKey(binding.provider, key);
+        result.checks.push(resolvedMethod === "api_key"
+          ? { code: "ai_connection_api_key_reverified", level: "info", message: "The provider verified this API key for adoption." }
+          : { code: "ai_connection_third_party_key_verified", level: "info", message: "The third-party endpoint credential is available for this agent." });
       } catch (error) {
         result.status = "fail";
         result.checks.push({ code: "ai_connection_api_key_rejected", level: "error", message: error instanceof HttpError ? error.message : "Could not verify the account. Try again." });

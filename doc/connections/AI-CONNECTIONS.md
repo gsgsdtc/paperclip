@@ -19,7 +19,7 @@ The shared `AI_CONNECTION_CAPABILITIES` contract defines these combinations:
 | Provider | Sign-in method | Existing harness |
 | --- | --- | --- |
 | Claude / Anthropic | Claude subscription token or Anthropic API key | Claude |
-| OpenAI | ChatGPT/Codex subscription or OpenAI API key | Codex |
+| OpenAI | ChatGPT/Codex subscription, OpenAI API key, or a third-party OpenAI-compatible endpoint | Codex |
 | OpenRouter | API key | OpenCode, with an `openrouter/` model |
 | Grok / xAI | Grok subscription or xAI API key | Grok |
 
@@ -32,6 +32,33 @@ instructions described below and require no sandbox. Environment selection does
 not change agent execution settings.
 API keys are validated against fixed provider endpoints; redirects
 and caller-supplied validation URLs are rejected.
+
+The third-party method (`third_party_api`) points Codex at an OpenAI-compatible
+endpoint the operator hosts or subscribes to. Setup collects a base URL, an API
+key, a model name, and the wire protocol (`responses` or `chat`, defaulting to
+`responses`). Both http and https base URLs are accepted, because internal
+gateways commonly terminate TLS elsewhere. The endpoint is probed once at
+creation by requesting `<baseUrl>/models`; a 401/403 rejects the key, while an
+unreachable or non-conforming endpoint is accepted so a gateway that is only
+reachable from the run environment can still be connected. The setup form offers
+an explicit “Fetch models” action that lists the same endpoint's models for
+convenience; manual model entry always works.
+
+The connection owns the model: the run writes `model_provider`, `model`, and a
+`[model_providers.paperclip]` table into the per-run Codex `config.toml`, so both
+Codex engines (CLI and the default ACP) use the endpoint, and any agent-level
+model is overridden at run time. Agent configuration shows that model as
+read-only. Non-secret routing (base URL, model, wire protocol) lives in
+`config.ai`; the API key stays in the vault like every other credential. Third-
+party accounts participate in the existing single personal default per provider,
+so a company with several endpoints must choose which one is the responsible
+user's default and select any others explicitly.
+
+Third-party accounts adopt like API keys, not subscriptions: agent setup
+reuses an existing endpoint from the same picker (the saved list includes
+third-party accounts), and the environment test treats the endpoint as an
+env-var credential, so it never demands a provider-CLI hello probe against a
+gateway the test host cannot reach.
 
 `runtimeConfig.aiConnection` contains `provider`, `mode`, and `method`. For responsible-user selections, `method` is a legacy wire hint retained for rolling upgrades; the resolver uses the selected account’s actual method:
 
@@ -93,6 +120,8 @@ subsequent agent creation fails or is cancelled.
 Account adoption during Save and the agent runtime test use the selected agent
 environment, or the instance default when no override is set. An unavailable
 remote environment blocks validation rather than probing the server host. The
+Codex subscription hello test honors the managed account's explicit empty
+`OPENAI_API_KEY`, so a server-level API key cannot replace the selected login.
 runtime test accepts the form’s prospective adapter selection before it is saved.
 For a saved-agent test, omitting `environmentId` uses the agent’s saved override.
 Sending `environmentId: null` tests a change back to the instance default.
@@ -353,3 +382,14 @@ identity, a different grant or responsible user, or a changed credential generat
 requires a fresh session. The metadata is removed before passing session params
 to an adapter. Temporary authentication-home paths do not change the configuration
 fingerprint. These checks do not relax current connection authorization.
+
+### Explicit account switching
+
+The agent connection picker lists every owned account, including the personal
+default. Selecting a named ChatGPT subscription pins that account for the agent;
+“Responsible user’s connection” continues to follow the task owner’s default.
+Completing a new connection binds the returned account and sign-in method rather
+than reverting to the previous method or personal default.
+
+Agent configuration refreshes preserve unsaved connection selections. After a
+save, the form clears only edits represented in the refreshed server configuration.

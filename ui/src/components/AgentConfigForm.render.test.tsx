@@ -3359,6 +3359,45 @@ describe("AgentConfigForm environment selector", () => {
     expect(result.container.textContent).toContain("Authenticated");
     expect(result.container.textContent).not.toContain("sk-ant-SECRET-TOKEN");
   });
+it("keeps an AI connection selection through a refresh and saves it persistently", async () => {
+  const subscriptionId = "11111111-1111-4111-8111-111111111111";
+  const grantId = "22222222-2222-4222-8222-222222222222";
+  const subscription = { provider: "openai", method: "subscription", mode: "delegated", connectionId: subscriptionId, grantId } as const;
+  const original = makeAgent({ runtimeConfig: { aiConnection: { provider: "openai", method: "third_party_api", mode: "responsible_user" } } });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity }, mutations: { retry: false } } });
+  client.setQueryData(["ai-connections", "company-1", "agent-1"], {
+    currentUserId: "user-1", connections: [{
+      id: subscriptionId, grantId, companyId: "company-1", provider: "openai", method: "subscription",
+      name: "ChatGPT subscription", ownership: "personal", ownerUserId: "user-1", status: "connected", isDefault: false,
+    }],
+  });
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  roots.push(root);
+  const onSave = vi.fn();
+  const render = async (agent: Agent) => {
+    await act(async () => root.render(<QueryClientProvider client={client}><ToastProvider><TooltipProvider>
+      <AgentConfigForm mode="edit" agent={agent} onSave={onSave} hidePromptTemplate showAdapterTypeField={false} showAdapterTestEnvironmentButton={false} />
+    </TooltipProvider></ToastProvider></QueryClientProvider>));
+    await flushReact();
+  };
+  await render(original);
+  const account = () => container.querySelector<HTMLButtonElement>('button[aria-label="ChatGPT subscription"]')!;
+  await act(async () => account().click());
+  await flushReact();
+  expect(account().getAttribute("aria-pressed")).toBe("true");
+  // A run/status update invalidates the agent query before Save; it still
+  // carries the old connection and must not erase the selection.
+  await render({ ...original, status: "running", updatedAt: new Date() });
+  expect(account().getAttribute("aria-pressed")).toBe("true");
+  await act(async () => findButton(container, "Save")!.click());
+  expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ runtimeConfig: { aiConnection: subscription } }));
+  await render({ ...original, runtimeConfig: { aiConnection: subscription }, updatedAt: new Date() });
+  expect(account().getAttribute("aria-pressed")).toBe("true");
+  expect(findButton(container, "Save")).toBeUndefined();
+  client.clear();
+});
 });
 
 const FIXED_CLAUDE_OAUTH_BINDING = {

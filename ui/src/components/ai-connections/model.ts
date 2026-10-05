@@ -41,6 +41,7 @@ export const AI_CONNECTION_STATUS: Record<AiConnectionStatus, string> = {
 };
 
 export function aiMethodLabel(provider: AiProvider, method: AiAuthMethod) {
+  if (method === "third_party_api") return "Third-party API";
   return method === "subscription"
     ? (AI_PROVIDERS[provider].subscriptionName ?? "Subscription unavailable")
     : "API key";

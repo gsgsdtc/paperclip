@@ -19,7 +19,7 @@ import type {
   Environment,
   InstanceSettings,
 } from "@paperclipai/shared";
-import { AGENT_ROLES, AGENT_ROLE_LABELS, ADAPTER_AUTH_MISSING_CHECK_CODE } from "@paperclipai/shared";
+import { AGENT_ROLES, AGENT_ROLE_LABELS, ADAPTER_AUTH_MISSING_CHECK_CODE, DEFAULT_AI_THIRD_PARTY_WIRE_API } from "@paperclipai/shared";
 import { AdapterLoginPanel } from "./AgentConfigForm";
 import {
   CONNECT_SOURCE_NAMES,
@@ -657,6 +657,20 @@ function OnboardingWizardInner({
       : saved?.credentialMode as CredentialMode | undefined) ?? null,
   );
   /**
+   * The OpenAI-compatible endpoint card, on the same step as the built-in
+   * sign-ins.
+   *
+   * A boolean rather than a third `CredentialMode`: the mode switch is a
+   * two-way flip by design, and the endpoint is not a provider sign-in at all
+   * — it is a form the operator fills. Keeping it separate also keeps the
+   * switch's copy honest while the endpoint is up.
+   */
+  const [thirdParty, setThirdParty] = useState(false);
+  const [thirdPartyBaseUrl, setThirdPartyBaseUrl] = useState("");
+  const [thirdPartyApiKey, setThirdPartyApiKey] = useState("");
+  const [thirdPartyModel, setThirdPartyModel] = useState("");
+  const [thirdPartyWireApi, setThirdPartyWireApi] = useState<"responses" | "chat">(DEFAULT_AI_THIRD_PARTY_WIRE_API);
+  /**
    * Where the connect step's sign-in sequence is.
    *
    * Picking a source starts it now, rather than a press of the footer button:
@@ -761,8 +775,14 @@ function OnboardingWizardInner({
    */
   const apiKeySecretRef = useRef<{ key: string; companyId: string; envKey: string; binding?: Awaited<ReturnType<typeof storeProviderApiKey>>["binding"]; aiConnection?: AiConnectionBinding } | null>(null);
   const managedSubscriptionRef = useRef<{ companyId: string; binding: AiConnectionBinding } | null>(null);
+  const managedThirdPartyRef = useRef<{ companyId: string; binding: AiConnectionBinding } | null>(null);
   const managedProvider = aiProviderForAdapter(adapterType);
+  /** Which credential the connect card is offering. The endpoint is its own mode. */
+  const connectMode: CredentialMode | "third_party" = thirdParty ? "third_party" : credentialMode;
+  /** Third-party endpoints are OpenAI-compatible, so only the Codex source offers them. */
+  const connectSupportsThirdParty = managedProvider === "openai";
   function managedBindingForStep(): AiConnectionBinding | undefined {
+    if (thirdParty) return managedThirdPartyRef.current?.companyId === createdCompanyId ? managedThirdPartyRef.current.binding : undefined;
     if (credentialMode === "api") return selectedApiKey?.aiConnection ?? (
       !selectedApiKey && apiKeySecretRef.current?.companyId === createdCompanyId && apiKeySecretRef.current.envKey === apiKeyEnvKeyFor(adapterType)
         ? apiKeySecretRef.current.aiConnection : undefined);
@@ -1184,7 +1204,7 @@ function OnboardingWizardInner({
    * sandbox, or a local CLI account — Connect verifies credentials before the hire.
    */
   const connectStepNeedsLogin = Boolean(
-    credentialMode !== "api" &&
+    connectMode === "subscription" &&
       // Connection-list invalidation can arrive before the login's completion
       // poll. Keep its controller mounted until it reports success; otherwise
       // the saved account replaces the panel and "Connecting" never finishes.
@@ -1213,7 +1233,7 @@ function OnboardingWizardInner({
 
   /** Without browser login, show instructions for the selected execution environment. */
   const connectStepHasNoSandbox =
-    credentialMode !== "api" && !canShowAdapterLogin && !authSignalUndecided;
+    connectMode === "subscription" && !canShowAdapterLogin && !authSignalUndecided;
 
   /*
     The sequence's derived state. Space and visibility are separate throughout:
@@ -1225,8 +1245,8 @@ function OnboardingWizardInner({
     connectPhase !== "idle" && connectPhase !== "unwindRow" && sourceSelected;
   const connectProgress = adapterEnvLoading ? "Testing connection…" : loading ? "Connecting…" : null;
   const hasSavedSubscription = Boolean(savedSubscription || savedKeys.storedLogin.data ||
-    (credentialMode !== "api" && managedBindingForStep()));
-  const connectHasCard = credentialMode === "api" || connectStepNeedsLogin || connectStepHasNoSandbox || Boolean(connectProgress);
+    (connectMode === "subscription" && managedBindingForStep()));
+  const connectHasCard = connectMode !== "subscription" || connectStepNeedsLogin || connectStepHasNoSandbox || Boolean(connectProgress);
   const connectCardLive =
     connectHasCard &&
     (connectPhase === "loading" ||
@@ -1384,7 +1404,16 @@ function OnboardingWizardInner({
                 label: "Connect",
                 icon: "arrow",
                 disabled:
-                  !connectStepReady || (credentialMode === "api" && !apiKey.trim() && !selectedApiKey),
+                  !connectStepReady ||
+                  // `connectMode`, not `credentialMode`. The toggle underneath
+                  // can still be on "api" while the endpoint card is the one on
+                  // screen — the mode is chosen before the source, and choosing
+                  // the endpoint does not move it. Read off `credentialMode` the
+                  // key-card clause applied to a card with no key field in it,
+                  // so Connect stayed grey however complete the endpoint was.
+                  (connectMode === "api" && !apiKey.trim() && !selectedApiKey) ||
+                  (connectMode === "third_party" &&
+                    (!thirdPartyBaseUrl.trim() || !thirdPartyApiKey.trim() || !thirdPartyModel.trim())),
               }
           : // Nothing is chosen on arrival, and the row is what chooses. Until
             // it has been answered the button has nothing to do.
@@ -1470,7 +1499,7 @@ function OnboardingWizardInner({
    */
   const canvasOpen =
     sourceSelected &&
-    (credentialMode === "api" || connectCardSpace || connectStepHasNoSandbox);
+    (connectMode !== "subscription" || connectCardSpace || connectStepHasNoSandbox);
 
   // The default (or a saved) adapterType can name an adapter the server has
   // since disabled — e.g. a cloud sandbox registry without claude_local. The
@@ -2093,6 +2122,45 @@ function OnboardingWizardInner({
         apiKeyStored = await storeApiKeyUserSecret(createdCompanyId);
         if (!apiKeyStored || !isCurrent()) return;
       }
+      // The endpoint form is not stored until Connect is pressed, so this is
+      // where the account is created. The ref keeps a second press from
+      // creating a second account for the same endpoint, the same way the key
+      // ref does for a typed key.
+      if (thirdParty && !managedBindingForStep()) {
+        const baseUrl = thirdPartyBaseUrl.trim();
+        const endpointKey = thirdPartyApiKey.trim();
+        const endpointModel = thirdPartyModel.trim();
+        if (!baseUrl || !endpointKey || !endpointModel) {
+          setError("Enter the endpoint base URL, its API key, and the model it serves.");
+          return;
+        }
+        try {
+          await aiConnectionsApi.create(createdCompanyId, {
+            provider: "openai",
+            method: "third_party_api",
+            name: `My ${CONNECT_SOURCE_NAMES[adapterType] ?? "OpenAI"} third-party API`,
+            ownership: "personal",
+            agentIds: [],
+            allAgents: true,
+            apiKey: endpointKey,
+            baseUrl,
+            model: endpointModel,
+            wireApi: thirdPartyWireApi,
+          });
+          managedThirdPartyRef.current = {
+            companyId: createdCompanyId,
+            binding: { provider: "openai", method: "third_party_api", mode: "responsible_user" },
+          };
+        } catch (err) {
+          setError(
+            err instanceof Error
+              ? `Could not save the endpoint: ${err.message}`
+              : "Could not save the endpoint.",
+          );
+          return;
+        }
+        if (!isCurrent()) return;
+      }
       if (credentialMode !== "api" && canUseLocalLogin && managedProvider && !managedBindingForStep() && !savedSubscription && !savedKeys.storedLogin.data) {
         await localLogin.connect();
         if (!isCurrent()) return;
@@ -2677,7 +2745,7 @@ function OnboardingWizardInner({
                         label: CONNECT_SOURCE_NAMES[opt.type] ?? opt.label,
                         icon: <ModelSourceMark type={opt.type} Fallback={opt.icon} />,
                       }))}
-                      mode={credentialMode}
+                      mode={thirdParty ? "third_party" : credentialMode}
                       selectedId={
                         sourcePicked &&
                         recommendedAdapters.some((opt) => opt.type === adapterType)
@@ -2720,9 +2788,50 @@ function OnboardingWizardInner({
                       transition={{ opacity: SOURCE_LINK_EXIT, height: MAKE_ROOM }}
                     >
                       <div className="-ml-3 mt-1">
-                        <CredentialModeLink mode={credentialMode} onChange={setCredentialMode} />
-                        {savedKeys.options.length > 0 && <p className="px-3 text-sm text-muted-foreground">{savedKeys.options.length} saved API {savedKeys.options.length === 1 ? "key available" : "keys available"}.</p>}
-                        {credentialMode === "subscription" && authSignalStatus === "present" && <p className="px-3 text-sm text-muted-foreground">An existing provider connection is available.</p>}
+                        {thirdParty ? (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (connectPhase !== "idle") return;
+                              setThirdParty(false);
+                              setError(null);
+                            }}
+                            className={cn(
+                              "group grid cursor-pointer rounded-md px-3 py-2 text-left text-sm font-medium",
+                              "outline-none focus-visible:ring-ring/50 focus-visible:ring-(length:--rad-3)",
+                            )}
+                          >
+                            <span className="text-muted-foreground underline decoration-muted-foreground/40 underline-offset-4 transition-colors group-hover:text-foreground group-hover:decoration-foreground/40">
+                              Use {credentialMode === "api" ? "an API key" : "subscription"} instead
+                            </span>
+                          </button>
+                        ) : (
+                          <>
+                            <CredentialModeLink mode={credentialMode} onChange={setCredentialMode} />
+                            {connectSupportsThirdParty && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  if (connectPhase !== "idle") return;
+                                  setThirdParty(true);
+                                  setSelectedSavedKey(createdCompanyId ? { companyId: createdCompanyId, envKey: apiKeyEnvKeyFor(adapterType), id: "" } : null);
+                                  setApiKey("");
+                                  setError(null);
+                                }}
+                                className={cn(
+                                  "group grid cursor-pointer rounded-md px-3 py-2 text-left text-sm font-medium",
+                                  "outline-none focus-visible:ring-ring/50 focus-visible:ring-(length:--rad-3)",
+                                )}
+                              >
+                                <span className="text-muted-foreground underline decoration-muted-foreground/40 underline-offset-4 transition-colors group-hover:text-foreground group-hover:decoration-foreground/40">
+                                  Use an OpenAI-compatible API instead
+                                </span>
+                              </button>
+                            )}
+                          </>
+                        )}
+                        {savedKeys.options.length > 0 && !thirdParty && <p className="px-3 text-sm text-muted-foreground">{savedKeys.options.length} saved API {savedKeys.options.length === 1 ? "key available" : "keys available"}.</p>}
+                        {!thirdParty && credentialMode === "subscription" && authSignalStatus === "present" && <p className="px-3 text-sm text-muted-foreground">An existing provider connection is available.</p>}
                       </div>
                     </motion.div>
                   </div>
@@ -2768,6 +2877,49 @@ function OnboardingWizardInner({
                         <Loader2 className="size-4 animate-spin" />
                         {connectProgress}
                       </p>
+                    ) : connectMode === "third_party" ? (
+                      <OnboardingLoginCard instruction="Point Codex at an OpenAI-compatible endpoint">
+                        <div className="space-y-3">
+                          <OnboardingCardField
+                            label="Base URL"
+                            placeholder="https://gateway.example.com/v1"
+                            value={thirdPartyBaseUrl}
+                            onChange={setThirdPartyBaseUrl}
+                            onSubmit={() => handleConnectStepPrimary()}
+                            autoFocus
+                          />
+                          <OnboardingCardField
+                            label="API key"
+                            placeholder="Enter API key here"
+                            masked
+                            value={thirdPartyApiKey}
+                            onChange={setThirdPartyApiKey}
+                            onSubmit={() => handleConnectStepPrimary()}
+                          />
+                          <OnboardingCardField
+                            label="Model"
+                            placeholder="e.g. deepseek-chat"
+                            value={thirdPartyModel}
+                            onChange={setThirdPartyModel}
+                            onSubmit={() => handleConnectStepPrimary()}
+                          />
+                          <label className="block space-y-2 text-sm">
+                            <span>Wire protocol</span>
+                            <Select
+                              value={thirdPartyWireApi}
+                              onValueChange={(value) => setThirdPartyWireApi(value as "responses" | "chat")}
+                            >
+                              <SelectTrigger aria-label="Wire protocol">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="responses">Responses API</SelectItem>
+                                <SelectItem value="chat">Chat Completions</SelectItem>
+                              </SelectContent>
+                            </Select>
+                          </label>
+                        </div>
+                      </OnboardingLoginCard>
                     ) : credentialMode === "api" ? (
                       <OnboardingLoginCard
                         instruction={savedKeys.options.length ? "Choose a saved API key or enter a new one" : `Provide your ${
