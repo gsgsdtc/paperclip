@@ -25,6 +25,7 @@ import {
   isAiConnectionCompatible,
   normalizeThirdPartyBaseUrl,
   supportsAiConnectionUsage,
+  thirdPartyEndpointOf,
   type AiConnectionBinding,
   type AiConnectionAttribution,
   type AiConnectionMetadata,
@@ -37,6 +38,7 @@ import { forbidden, notFound, unprocessable } from "../errors.js";
 import { logActivity } from "./activity-log.js";
 import { secretService } from "./secrets.js";
 import { probeAiConnectionUsage } from "./ai-connection-usage.js";
+import { fetchThirdPartyModels } from "./third-party-openai.js";
 
 /** Same human audience displayed by the existing Connections identity controls. */
 function canUseCredential(
@@ -236,6 +238,26 @@ export function aiConnectionService(db: Db) {
     }
     const value = await credential(row);
     return { ...identity, ...await probeAiConnectionUsage(metadata.data, value) };
+  }
+  /** Models served by a third-party endpoint the caller can already use. */
+  async function listThirdPartyModels(
+    companyId: string,
+    userId: string,
+    connectionId: string,
+    request: typeof fetch = fetch,
+  ) {
+    if (!(await membership(companyId, userId))) throw forbidden("An active company member is required");
+    const candidates = (await rows(companyId)).filter((row) => row.connection.id === connectionId);
+    const audience = await db.select().from(connectionGrantMembers).where(eq(connectionGrantMembers.companyId, companyId));
+    const visible = candidates.filter(({ grant }) => canUseCredential(grant, userId, audience.filter((member) => member.grantId === grant.id)));
+    if (!visible.length) throw notFound("AI connection not found");
+    const row = visible.find(({ grant }) => grant.subjectUserId === userId) ?? visible[0]!;
+    const endpoint = thirdPartyEndpointOf(aiConnectionMetadataSchema.safeParse(row.connection.config.ai).data);
+    if (!endpoint) throw unprocessable("Reconnect this third-party endpoint before choosing a model");
+    return {
+      model: endpoint.model,
+      models: await fetchThirdPartyModels(endpoint.baseUrl, await credential(row), request),
+    };
   }
   async function select(input: {
     companyId: string;
@@ -870,5 +892,5 @@ export function aiConnectionService(db: Db) {
       });
     });
   }
-  return { list, select, credential, probeUsage, save, setDefault, membership, markAuthenticationFailed };
+  return { list, select, credential, probeUsage, listThirdPartyModels, save, setDefault, membership, markAuthenticationFailed };
 }

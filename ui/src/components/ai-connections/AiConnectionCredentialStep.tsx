@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { aiConnectionsApi } from "@/api/ai-connections";
+import { ThirdPartyModelField } from "./ThirdPartyModelField";
 import { environmentsApi } from "@/api/environments";
 import { instanceSettingsApi } from "@/api/instanceSettings";
 import { queryKeys } from "@/lib/queryKeys";
@@ -178,13 +179,7 @@ function ThirdPartyApiConnectionStep({ companyId, provider, connectionId, name: 
   const [apiKey, setApiKey] = useState("");
   const [model, setModel] = useState("");
   const [wireApi, setWireApi] = useState<ThirdPartyWireApi>(DEFAULT_AI_THIRD_PARTY_WIRE_API);
-  const [discoveredModels, setDiscoveredModels] = useState<string[]>([]);
   const client = useQueryClient();
-  const discoverable = Boolean(baseUrl.trim() && apiKey.trim());
-  const discover = useMutation({
-    mutationFn: () => aiConnectionsApi.thirdPartyModels(companyId, { baseUrl: baseUrl.trim(), apiKey }),
-    onSuccess: (result) => setDiscoveredModels(result.models),
-  });
   const save = useMutation({
     mutationFn: () => aiConnectionsApi.create(companyId, { provider, method: "third_party_api", name, ownership, agentIds, allAgents, connectionId, apiKey, baseUrl: baseUrl.trim(), model: model.trim(), wireApi }),
     onSuccess: (result) => { void client.invalidateQueries({ queryKey: ["ai-connections", companyId] }); onComplete({ ...result, method: "third_party_api" }); },
@@ -193,11 +188,10 @@ function ThirdPartyApiConnectionStep({ companyId, provider, connectionId, name: 
   const canSave = Boolean(name.trim() && baseUrl.trim() && apiKey.trim() && model.trim()) && !save.isPending;
   return <div className="mx-auto w-full min-w-0 max-w-xl space-y-4">
     <label className="block space-y-2 text-sm">Connection name<Input value={name} onChange={(event) => setName(event.target.value)} disabled={Boolean(connectionId)} /></label>
-    <label className="block space-y-2 text-sm">Base URL<Input value={baseUrl} onChange={(event) => { setBaseUrl(event.target.value); setDiscoveredModels([]); }} placeholder="https://gateway.example.com/v1" autoFocus /></label>
+    <label className="block space-y-2 text-sm">Base URL<Input value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} placeholder="https://gateway.example.com/v1" autoFocus /></label>
     <p className="text-xs text-muted-foreground">OpenAI-compatible endpoint. http and https are both accepted.</p>
-    <ProviderApiKeyCard providerName="third-party endpoint" value={apiKey} onChange={(value) => { setApiKey(value); setDiscoveredModels([]); }} onSubmit={() => save.mutate()} disabled={save.isPending} placeholder="Enter API key here" />
-    <label className="block space-y-2 text-sm">Model<Input value={model} onChange={(event) => setModel(event.target.value)} placeholder="e.g. deepseek-chat" list="third-party-models" /></label>
-    <datalist id="third-party-models">{discoveredModels.map((id) => <option key={id} value={id} />)}</datalist>
+    <ProviderApiKeyCard providerName="third-party endpoint" value={apiKey} onChange={setApiKey} onSubmit={() => save.mutate()} disabled={save.isPending} placeholder="Enter API key here" />
+    <ThirdPartyModelField companyId={companyId} baseUrl={baseUrl} apiKey={apiKey} value={model} onChange={setModel} onSubmit={() => save.mutate()} disabled={save.isPending} />
     <label className="block space-y-2 text-sm">Wire protocol<Select value={wireApi} onValueChange={(value) => setWireApi(value as ThirdPartyWireApi)}>
       <SelectTrigger aria-label="Wire protocol"><SelectValue /></SelectTrigger>
       <SelectContent>
@@ -205,11 +199,6 @@ function ThirdPartyApiConnectionStep({ companyId, provider, connectionId, name: 
         <SelectItem value="chat">Chat Completions</SelectItem>
       </SelectContent>
     </Select></label>
-    <div className="flex flex-wrap items-center gap-2">
-      <Button type="button" variant="outline" disabled={!discoverable || discover.isPending} onClick={() => discover.mutate()}>{discover.isPending ? "Fetching…" : "Fetch models"}</Button>
-      {discoveredModels.length > 0 && <span className="text-xs text-muted-foreground">{discoveredModels.length} model{discoveredModels.length === 1 ? "" : "s"} found. Pick one above or type any name.</span>}
-    </div>
-    {discover.error && <p role="alert" className="text-sm text-destructive">{discover.error.message}</p>}
     {save.error && <p role="alert" className="text-sm text-destructive">{save.error.message}</p>}
     <div className="flex justify-between gap-2"><Button variant="ghost" onClick={onCancel}>Cancel</Button><Button disabled={!canSave} onClick={() => save.mutate()}>{save.isPending ? "Connecting…" : "Connect"}</Button></div>
   </div>;

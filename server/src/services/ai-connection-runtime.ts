@@ -209,6 +209,12 @@ done`,
   }
 }
 
+/** A model chosen while selecting the connector wins; otherwise the connection default. */
+export function resolveThirdPartyRunModel(config: Record<string, unknown>, endpointModel: string): string {
+  const selected = typeof config.thirdPartyModel === "string" ? config.thirdPartyModel.trim() : "";
+  return selected || endpointModel;
+}
+
 /**
  * Third-party OpenAI-compatible routing for the managed Codex home. Written
  * directly into the per-run config.toml so both Codex engines (CLI and the
@@ -356,11 +362,14 @@ export async function prepareManagedAiRuntime(
       throw unprocessable("Reconnect this third-party endpoint before running it", {
         code: "ai_connection_credential_missing",
       });
+    const thirdPartyModel = thirdParty
+      ? resolveThirdPartyRunModel(input.config, thirdParty.model)
+      : undefined;
     if (input.binding.provider === "openai")
       await writeFile(
         path.join(providerHome, "config.toml"),
         thirdParty
-          ? thirdPartyCodexConfigToml(thirdParty)
+          ? thirdPartyCodexConfigToml({ ...thirdParty, model: thirdPartyModel! })
           : 'cli_auth_credentials_store = "file"\n',
         { mode: 0o600 },
       );
@@ -391,9 +400,10 @@ export async function prepareManagedAiRuntime(
       config: {
         ...input.config,
         env,
-        // The connection owns the model for third-party endpoints, so the run
-        // always asks that endpoint for the model it actually serves.
-        ...(thirdParty ? { model: thirdParty.model } : {}),
+        // The connector's endpoint stays fixed. A model picked while selecting
+        // that connector overrides the connection default; a leftover adapter
+        // model does not.
+        ...(thirdPartyModel ? { model: thirdPartyModel, thirdPartyModel: undefined } : {}),
         managedAiConnection: { ...selection.attribution, identity },
       },
       attribution: selection.attribution,

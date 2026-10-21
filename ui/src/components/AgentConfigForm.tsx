@@ -1678,10 +1678,14 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
           {!isCreate && selectedCompanyId && <AiConnectionField companyId={selectedCompanyId} agentId={props.agent.id} agentName={props.agent.name} adapterType={adapterType === "paperclip_runner" ? eff("adapterConfig", "provider", config.provider) === "codex" ? "codex_local" : eff("adapterConfig", "provider", config.provider) === "opencode" ? "opencode_local" : eff("adapterConfig", "provider", config.provider) === "acpx" && eff("adapterConfig", "acpxAgent", config.acpxAgent) === "grok" ? "grok_local" : eff("adapterConfig", "provider", config.provider) === "acpx" && eff("adapterConfig", "acpxAgent", config.acpxAgent) === "claude" ? "claude_local" : adapterType : adapterType}
             value={aiConnectionBindingSchema.safeParse((overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? runtimeConfig.aiConnection).data}
-            model={String(eff("adapterConfig", "model", config.model) ?? "")} environmentId={currentDefaultEnvironmentId || undefined} legacy
+            model={String(eff("adapterConfig", "thirdPartyModel", config.thirdPartyModel) ?? "")} environmentId={currentDefaultEnvironmentId || undefined} legacy
             onBoundConnectionModel={setThirdPartyConnectionModel}
+            onModelChange={(next) => mark("adapterConfig", "thirdPartyModel", next.trim() || undefined)}
             onChange={binding => {
+              const currentBinding = aiConnectionBindingSchema.safeParse((overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? runtimeConfig.aiConnection).data;
+              const bindingIdentity = (item: typeof binding | undefined) => item?.mode === "responsible_user" ? `responsible:${item.provider}:${item.method}` : item ? `${item.mode}:${item.connectionId}:${item.method}` : "";
               mark("runtime", "runtimeConfig", { ...eff("runtime", "runtimeConfig", runtimeConfig), aiConnection: binding });
+              if (bindingIdentity(binding) !== bindingIdentity(currentBinding)) mark("adapterConfig", "thirdPartyModel", undefined);
               // Drop the endpoint-owned model when returning to OpenAI so the
               // subscription does not receive a third-party model name.
               if (binding.provider === "openai" && binding.method !== "third_party_api" && thirdPartyConnectionModel === currentModelId) {
@@ -1744,17 +1748,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
           {renderAdapterFields("adapter")}
           {isLocal && (<>
-              {thirdPartyConnectionModel ? (
-                <Field
-                  label="Model"
-                  hint="This third-party AI connection provides the model used at run time."
-                >
-                  <div className="flex items-center gap-2 rounded-md border border-border bg-muted/40 px-2.5 py-1.5 text-sm text-muted-foreground">
-                    <span className="font-mono">{thirdPartyConnectionModel}</span>
-                    <span className="text-xs">Provided by the AI connection</span>
-                  </div>
-                </Field>
-              ) : (
+              {thirdPartyConnectionModel ? null : (
               <ModelDropdown
                 models={models}
                 value={currentModelId}

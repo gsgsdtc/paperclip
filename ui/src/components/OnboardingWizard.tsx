@@ -2,6 +2,7 @@ import { healthApi } from "@/api/health";
 import { LocalProviderLoginInstructions } from "./AdapterLoginChrome";
 import { useLocalAiLogin } from "./ai-connections/useLocalAiLogin";
 import { aiConnectionsApi } from "@/api/ai-connections";
+import { ThirdPartyModelField } from "./ai-connections/ThirdPartyModelField";
 import { aiProviderForAdapter } from "./ai-connections/AiConnectionField";
 import type { AiConnectionBinding } from "@paperclipai/shared";
 import { storeProviderApiKey } from "../lib/provider-credential";
@@ -2896,12 +2897,15 @@ function OnboardingWizardInner({
                             onChange={setThirdPartyApiKey}
                             onSubmit={() => handleConnectStepPrimary()}
                           />
-                          <OnboardingCardField
-                            label="Model"
-                            placeholder="e.g. deepseek-chat"
+                          <ThirdPartyModelField
+                            companyId={createdCompanyId}
+                            baseUrl={thirdPartyBaseUrl}
+                            apiKey={thirdPartyApiKey}
                             value={thirdPartyModel}
                             onChange={setThirdPartyModel}
                             onSubmit={() => handleConnectStepPrimary()}
+                            variant="onboarding"
+                            disabled={loading}
                           />
                           <label className="block space-y-2 text-sm">
                             <span>Wire protocol</span>

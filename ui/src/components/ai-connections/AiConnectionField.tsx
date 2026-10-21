@@ -10,6 +10,7 @@ import {
 } from "@paperclipai/shared";
 import { aiConnectionsApi } from "@/api/ai-connections";
 import { AiConnectionPicker } from "./AiConnectionPicker";
+import { ConnectorModelSelect } from "./ConnectorModelSelect";
 import { AiConnectionLegacyNotice } from "./AiConnectionManagement";
 import { AiConnectionCredentialStep } from "./AiConnectionCredentialStep";
 import { Button } from "@/components/ui/button";
@@ -47,19 +48,23 @@ export function AiConnectionField({
   legacy = false,
   readOnly = false,
   onBoundConnectionModel,
+  onModelChange,
 }: {
   companyId: string;
   agentId?: string;
   agentName: string;
   adapterType: string;
+  /** Chosen model for the selected third-party connector. Empty keeps its default. */
   model?: string;
   value?: AiConnectionBinding;
   onChange: (binding: AiConnectionBinding) => void;
   environmentId?: string;
   legacy?: boolean;
   readOnly?: boolean;
-  /** Third-party connections own their model; hosts can lock the model field. */
+  /** Set while a third-party connector is selected, so hosts can hide the catalog picker. */
   onBoundConnectionModel?: (model: string | null) => void;
+  /** Called when the operator picks a model for the selected connector. */
+  onModelChange?: (model: string) => void;
 }) {
   const provider = aiProviderForAdapter(adapterType);
   const returnFocus = useRef<HTMLElement | null>(null);
@@ -105,22 +110,21 @@ export function AiConnectionField({
   const method: AiAuthMethod = (value?.mode !== "responsible_user" ? value?.method : undefined)
     ?? accounts.data?.connections.find((account) => account.provider === provider && account.isDefault)?.method
     ?? (provider === "openrouter" ? "api_key" : "subscription");
-  const boundThirdPartyModel = useMemo(() => {
+  const selectedConnection = useMemo(() => {
     if (!provider || !value) return null;
     const connections = accounts.data?.connections ?? [];
     const currentUserId = accounts.data?.currentUserId ?? "";
-    const selected =
-      value.mode === "responsible_user"
-        ? connections.find(
-            (connection) =>
-              connection.provider === provider &&
-              connection.ownership === "personal" &&
-              connection.ownerUserId === currentUserId &&
-              connection.isDefault,
-          )
-        : connections.find((connection) => connection.id === value.connectionId);
-    return selected?.method === "third_party_api" ? selected.model ?? null : null;
+    return value.mode === "responsible_user"
+      ? connections.find(
+          (connection) =>
+            connection.provider === provider &&
+            connection.ownership === "personal" &&
+            connection.ownerUserId === currentUserId &&
+            connection.isDefault,
+        ) ?? null
+      : connections.find((connection) => connection.id === value.connectionId) ?? null;
   }, [accounts.data, provider, value]);
+  const boundThirdPartyModel = selectedConnection?.method === "third_party_api" ? selectedConnection.model ?? null : null;
   useEffect(() => {
     onBoundConnectionModel?.(boundThirdPartyModel);
   }, [boundThirdPartyModel, onBoundConnectionModel]);
@@ -157,6 +161,16 @@ export function AiConnectionField({
         onReconnect={(!value || value.mode === "responsible_user") && personalDefault && personalDefault.status !== "connected" ? () => openConnection(personalDefault) : undefined}
         onRetry={() => void accounts.refetch()}
       />
+      {onModelChange && selectedConnection?.method === "third_party_api" && (
+        <ConnectorModelSelect
+          companyId={companyId}
+          connectionId={selectedConnection.id}
+          value={model ?? ""}
+          fallback={selectedConnection.model}
+          disabled={readOnly}
+          onChange={onModelChange}
+        />
+      )}
       <Dialog
         open={Boolean(pendingAdoption)}
         onOpenChange={(open) => {

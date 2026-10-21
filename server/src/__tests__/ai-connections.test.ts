@@ -1068,8 +1068,25 @@ describe("third-party AI endpoints", () => {
       expect(configToml).toContain('base_url = "https://gateway.example.com/v1"');
       expect(configToml).toContain('env_key = "OPENAI_API_KEY"');
       expect(configToml).toContain('wire_api = "chat"');
-      // The connection's model wins over the agent's stored model.
+      // A leftover adapter model does not override the connection.
       expect(run.config.model).toBe("deepseek-chat");
+      const chosen = await prepareManagedAiRuntime(db, {
+        ...input,
+        adapterType: "codex_local",
+        binding: { provider: "openai", method: "third_party_api", mode: "responsible_user" },
+        responsibleUserId: userId,
+        config: { cwd, model: "stale-model", thirdPartyModel: "qwen-plus" },
+      });
+      try {
+        const chosenToml = await readFile(path.join((chosen.config.env as Record<string, string>).CODEX_HOME, "config.toml"), "utf8");
+        expect(chosenToml).toContain('model = "qwen-plus"');
+        expect(chosen.config.model).toBe("qwen-plus");
+      } finally {
+        await chosen.cleanup();
+      }
+      await expect(service.listThirdPartyModels(companyId, userId, saved.connectionId, async () =>
+        new Response(JSON.stringify({ data: [{ id: "qwen-plus" }, { id: "deepseek-chat" }] }), { status: 200 }),
+      )).resolves.toEqual({ model: "deepseek-chat", models: ["deepseek-chat", "qwen-plus"] });
     } finally {
       await run.cleanup();
       await rm(cwd, { recursive: true, force: true });

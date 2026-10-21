@@ -139,6 +139,8 @@ function Setup({
     createdAgentId ? "saved" : connectionAdapter ? "connect" : "runtime",
   );
   const [model, setModel] = useState("");
+  const [connectorModel, setConnectorModel] = useState("");
+  const [connectorOwnsModel, setConnectorOwnsModel] = useState(false);
   const efforts = isRunner ? [] : setupEfforts(adapterType, model);
   const [effort, setEffort] = useState("");
   const [modelOpen, setModelOpen] = useState(false);
@@ -367,6 +369,8 @@ function Setup({
         ...(branch.trim() ? { repoStartingRef: branch.trim() } : {}),
       });
     if (adapterType === "hermes_gateway") config.apiBaseUrl = gatewayUrl.trim();
+    const bound = aiBinding ?? nextConnection?.aiConnection;
+    if (bound?.method === "third_party_api" && connectorModel.trim()) config.thirdPartyModel = connectorModel.trim();
     if (usingKimiApi) {
       // --model overrides Kimi's environment-defined model. Let KIMI_MODEL_NAME win.
       delete config.model;
@@ -845,15 +849,17 @@ function Setup({
                               </Button>
                             </div>
                           ) : (
-                            <AiConnectionField companyId={companyId} agentName={name} adapterType={brandType} model={model} environmentId={environmentId ?? undefined} value={aiBinding}
-                              onChange={binding => { setRuntimeAiBinding(binding); resetTest(); }} />
+                            <AiConnectionField companyId={companyId} agentName={name} adapterType={brandType} model={connectorModel} environmentId={environmentId ?? undefined} value={aiBinding}
+                              onBoundConnectionModel={(owned) => setConnectorOwnsModel(Boolean(owned))}
+                              onModelChange={(next) => { setConnectorModel(next); resetTest(); }}
+                              onChange={binding => { setRuntimeAiBinding(binding); setConnectorModel(""); resetTest(); }} />
                           )
                         )}
                         {models.error && <p role="alert" className="text-sm text-destructive">Could not load models. Retry or enter a model ID manually.</p>}
                         {((showModel && !usingKimiApi) ||
                           efforts.length > 0) && (
                           <div className="grid items-start gap-5 sm:grid-cols-2">
-                            {showModel && !usingKimiApi && (
+                            {showModel && !usingKimiApi && !connectorOwnsModel && (
                               <ModelDropdown
                                 models={models.data ?? []}
                                 value={model}
